@@ -45,36 +45,46 @@ class KivyCamera(Image):
         self.fps = 30
 
     def start_camera(self):
+        # 1. Liberar cámara anterior si existe
         if self.capture:
             self.capture.release()
             self.capture = None
 
         found = False
         log_intentos = ""
-        possible_indices = [0, 1, 2, 3, 4]
+        possible_indices = [0, 1, 2, 3] # Probamos las cámaras más comunes
         
         for i in possible_indices:
             try:
-                temp_cap = cv2.VideoCapture(i)
-                # No forzamos resolución para evitar crashes
+                # INTENTO A: Método nativo de Android (El truco nuevo)
+                # cv2.CAP_ANDROID suele ser el valor 700, ayuda a conectar directo al hardware
+                temp_cap = cv2.VideoCapture(i, cv2.CAP_ANDROID)
+                
+                if not temp_cap.isOpened():
+                    # INTENTO B: Método Estándar (Por si el A falla)
+                    temp_cap = cv2.VideoCapture(i)
+
                 if temp_cap.isOpened():
+                    # Leer frame de prueba para confirmar que es real
                     ret, frame = temp_cap.read()
-                    if ret and frame is not None:
+                    if ret and frame is not None and frame.size > 0:
                         self.capture = temp_cap
-                        self.error_message = ""
+                        self.error_message = "" # ¡ÉXITO! Borramos el error
                         Clock.schedule_interval(self.update, 1.0 / self.fps)
                         found = True
+                        print(f"Cámara encontrada en índice {i}")
                         break
                     else:
-                        log_intentos += f"Idx {i}: Sin imagen.\n"
+                        log_intentos += f"Cam {i}: Abre pero pantalla negra.\n"
                         temp_cap.release()
                 else:
-                    log_intentos += f"Idx {i}: No abre.\n"
+                    log_intentos += f"Cam {i}: Bloqueada/No existe.\n"
+            
             except Exception as e:
-                log_intentos += f"Idx {i} Err: {str(e)}\n"
+                log_intentos += f"Cam {i} Error: {str(e)}\n"
 
         if not found:
-            self.error_message = f"NO CAMARA: {log_intentos}"
+            self.error_message = f"ERROR FINAL:\n{log_intentos}\nTIP: Reinicia el celular."
 
     def stop_camera(self):
         Clock.unschedule(self.update)
@@ -827,3 +837,4 @@ if __name__ == '__main__':
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(f"--- ERROR {datetime.now()} ---\n{error_trace}")
         except: pass
+
