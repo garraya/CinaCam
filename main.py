@@ -11,10 +11,8 @@ from kivy.graphics.texture import Texture
 from kivy.utils import platform
 from kivy.core.window import Window
 from kivy.properties import StringProperty, NumericProperty, BooleanProperty, ListProperty
-from kivy.factory import Factory 
 
-import cv2
-import numpy as np
+from camera4kivy import Preview
 import os
 import shutil
 import time
@@ -24,178 +22,69 @@ from datetime import datetime
 if platform not in ['android', 'ios']:
     Window.size = (400, 750)
 
-# --- CLASE CÁMARA MEJORADA ---
-class KivyCamera(Image):
+class KivyCamera(Preview):
     is_recording = BooleanProperty(False)
     is_paused = BooleanProperty(False)
-    video_writer = None
     capture_count = NumericProperty(0)
-    error_message = StringProperty("Esperando...")
+    error_message = StringProperty("")
 
-    def __init__(self, **kwargs):
-        super(KivyCamera, self).__init__(**kwargs)
-        self.capture = None
-        self.fps = 30
+    video_path = StringProperty("")
 
-    def start_camera(self):
-        # 1. Verificar Permisos antes de nada
-        if platform == 'android':
-            from android.permissions import check_permission, Permission
-            if not check_permission(Permission.CAMERA):
-                self.error_message = "FALTA PERMISO DE CAMARA\nReinicia la App y acepta los permisos."
-                return
+    def on_enter(self):
+        self.connect_camera()
 
-        # 2. Cerrar cámara anterior
-        if self.capture:
-            try: self.capture.release()
-            except: pass
-            self.capture = None
+    def on_leave(self):
+        self.disconnect_camera()
 
-        self.error_message = "Iniciando..."
-        Clock.schedule_once(self._start_camera_slow, 0.2)
+    def on_frame(self, frame, *args):
+            pass
 
-    def _start_camera_slow(self, dt):
-        found = False
-        log = ""
-        
-        # Probamos índices comunes
-        indices_a_probar = [0, 1, 2, 3]
-        
-        for i in indices_a_probar:
-            try:
-                # Usamos configuración estándar
-                cap = cv2.VideoCapture(i)
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                
-                if cap.isOpened():
-                    for _ in range(3): # Leer un poco para despertar sensor
-                        cap.read()
-                        
-                    ret, frame = cap.read()
-                    if ret and frame is not None and frame.size > 0:
-                        self.capture = cap
-                        self.error_message = ""
-                        Clock.schedule_interval(self.update, 1.0 / self.fps)
-                        found = True
-                        print(f"Cámara {i} ABRIO CORRECTAMENTE")
-                        return
-                    else:
-                        log += f"Cam {i}: Abre vacía.\n"
-                        cap.release()
-                else:
-                    log += f"Cam {i}: Cerrada.\n"
-                
-                if platform == 'android':
-                    time.sleep(0.2)
-                    
-            except Exception as e:
-                log += f"Err {i}: {str(e)}\n"
-
-        if not found:
-            self.error_message = f"ERROR:\n{log}\nIntenta reiniciar el celular."
-
-    def stop_camera(self):
-        Clock.unschedule(self.update)
-        self.close_video_file()
-        if self.capture:
-            self.capture.release()
-            self.capture = None
-
-    def update(self, dt):
-        if self.capture:
-            ret, frame = self.capture.read()
-            if ret:
-                if platform == 'android':
-                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-
-                if self.is_recording and not self.is_paused and self.video_writer:
-                    self.video_writer.write(frame)
-
-                self.current_clean_frame = frame
-
-                try:
-                    h, w = frame.shape[:2]
-                    if h > 800: 
-                        scale = 800 / h
-                        w = int(w * scale)
-                        h = int(h * scale)
-                        frame_resized = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
-                    else:
-                        frame_resized = frame
-
-                    buf = cv2.flip(frame_resized, 0).tobytes()
-                    texture = Texture.create(size=(frame_resized.shape[1], frame_resized.shape[0]), colorfmt='bgr')
-                    texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
-                    self.texture = texture
-                except: pass
-
+    # ------------------------
+    # 📸 FOTO
+    # ------------------------
     def take_photo(self):
-        if not hasattr(self, 'current_clean_frame') or self.current_clean_frame is None:
-            self.error_message = "Espera imagen..."
-            return
         app = App.get_running_app()
-        try:
-            if not os.path.exists(app.path_puesto):
-                os.makedirs(app.path_puesto, exist_ok=True)
-            prefix = app.current_measurement_type[:3]
-            filename = f"{app.path_puesto}/{prefix}_Foto_{datetime.now().strftime('%H%M%S')}.jpg"
-            cv2.imwrite(filename, self.current_clean_frame)
-            self.capture_count += 1
-            self.error_message = "FOTO OK"
-        except Exception as e:
-            self.error_message = f"Error: {e}"
+        os.makedirs(app.path_puesto, exist_ok=True)
 
+        fname = f"{app.path_puesto}/Foto_{datetime.now().strftime('%H%M%S')}.png"
+        self.export_to_png(fname)
+        self.capture_count += 1
+        self.error_message = "FOTO OK"
+
+    # ------------------------
+    # 🎥 VIDEO
+    # ------------------------
     def toggle_record_stop(self):
-        if self.capture is None:
-            self.error_message = "Sin Cámara"
-            return
         app = App.get_running_app()
+
         if not self.is_recording:
-            try:
-                if not os.path.exists(app.path_puesto):
-                    os.makedirs(app.path_puesto, exist_ok=True)
-                prefix = app.current_measurement_type[:3]
-                filename = f"{app.path_puesto}/{prefix}_Video_{datetime.now().strftime('%H%M%S')}.mp4"
-                
-                w = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-                h = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                if platform == 'android': w, h = h, w
-                    
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                self.video_writer = cv2.VideoWriter(filename, fourcc, 30.0, (w, h))
-                if self.video_writer.isOpened():
-                    self.is_recording = True
-                    self.is_paused = False
-                    self.error_message = "GRABANDO..."
-                else:
-                    self.error_message = "Error Video"
-            except Exception as e:
-                self.error_message = f"Error: {e}"
+            os.makedirs(app.path_puesto, exist_ok=True)
+
+            self.video_path = f"{app.path_puesto}/Video_{datetime.now().strftime('%H%M%S')}.mp4"
+
+            self.start_recording(self.video_path)
+            self.is_recording = True
+            self.is_paused = False
+            self.error_message = "GRABANDO..."
         else:
-            self.close_video_file()
+            self.stop_recording()
+            self.is_recording = False
+            self.is_paused = False
+            self.capture_count += 1
+            self.error_message = "VIDEO GUARDADO"
 
     def toggle_pause(self):
-        if self.is_recording:
-            self.is_paused = not self.is_paused
+        # Camera4Kivy NO soporta pausa real
+        self.error_message = "Pausa no disponible"
 
     def exit_screen(self):
         if self.is_recording:
-            self.close_video_file()
+            self.stop_recording()
+            self.is_recording = False
+
         app = App.get_running_app()
         app.root.current = 'review'
 
-    def close_video_file(self):
-        if self.is_recording:
-            self.is_recording = False
-            self.is_paused = False
-            if self.video_writer:
-                self.video_writer.release()
-                self.video_writer = None
-            self.capture_count += 1
-            self.error_message = "Video Guardado."
-
-Factory.register('KivyCamera', cls=KivyCamera)
 
 # --- DISEÑO KV ---
 KV = '''
@@ -448,10 +337,6 @@ ScreenManager:
         Widget:
             size_hint_y: 1
 
-        BotonECAM:
-            text: "ABRIR CÁMARA"
-            on_release: root.iniciar_puesto()
-
 <CameraScreen>:
     name: 'camera'
     FloatLayout:
@@ -493,7 +378,10 @@ ScreenManager:
             pos_hint: {'center_x': 0.5, 'center_y': 0.5}
             opacity: 1 if "Err" in qrcam.error_message or "FALTA" in qrcam.error_message else 0
             disabled: not ("Err" in qrcam.error_message or "FALTA" in qrcam.error_message)
-            on_release: qrcam.start_camera()
+            on_release:
+                qrcam.disconnect_camera()
+                qrcam.connect_camera()
+
 
         BoxLayout:
             size_hint: (1, None)
@@ -734,11 +622,11 @@ class JobScreen(Screen):
             except: pass
 
             cam = app.root.get_screen('camera').ids.qrcam
-            cam.capture_count = 0 
+            cam.capture_count = 0
             cam.is_recording = False
             cam.is_paused = False
-            cam.start_camera()
             app.root.current = 'camera'
+
 
 class CameraScreen(Screen):
     pass
@@ -830,7 +718,7 @@ class CimaCamApp(App):
         if key == 27:
             sm = self.root
             if sm.current == 'camera':
-                try: sm.get_screen('camera').ids.qrcam.stop_camera()
+                try: sm.get_screen('camera').ids.qrcam.disconnect_camera()
                 except: pass
                 sm.current = 'job'
                 return True
@@ -860,3 +748,4 @@ if __name__ == '__main__':
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(f"--- ERROR {datetime.now()} ---\n{error_trace}")
         except: pass
+
