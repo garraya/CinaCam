@@ -5,6 +5,7 @@ package.domain = ar.com.cimahys
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 version = 0.3
+icon.filename = logo.png
 
 # ESTA ES LA CLAVE:
 # 1. Sin 'pillow' (innecesario y conflictivo).
