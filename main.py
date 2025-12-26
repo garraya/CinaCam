@@ -41,12 +41,30 @@ class KivyCamera(Image):
         self.fps = 30
 
     def start_camera(self):
-        self.capture = cv2.VideoCapture(0)
-        # Intentar índice 1 si el 0 falla (común en algunas PC/Android)
-        if not self.capture.isOpened():
-            self.capture.release()
-            self.capture = cv2.VideoCapture(1)
-        Clock.schedule_interval(self.update, 1.0 / self.fps)
+        # Intentar buscar la cámara en varios índices
+        found = False
+        # Probamos del índice 0 al 5 (algunos celulares usan el 2 o el 3 para la trasera)
+        possible_indices = [0, 1, 2, 3, 4]
+        
+        for index in possible_indices:
+            print(f"Probando cámara índice {index}...")
+            temp_cap = cv2.VideoCapture(index)
+            
+            if temp_cap.isOpened():
+                # Leemos un frame de prueba para ver si es real
+                ret, frame = temp_cap.read()
+                if ret and frame is not None and frame.shape[0] > 0:
+                    self.capture = temp_cap
+                    self.fps = 30
+                    self.error_message = f"Cámara encontrada en índice: {index}"
+                    Clock.schedule_interval(self.update, 1.0 / self.fps)
+                    found = True
+                    break
+                else:
+                    temp_cap.release()
+            
+        if not found:
+            self.error_message = "ERROR CRÍTICO: Ninguna cámara respondió (0-4)."
 
     def stop_camera(self):
         Clock.unschedule(self.update)
@@ -723,4 +741,5 @@ class CimaCamApp(App):
             return True # Por defecto no cerrar si no es 'welcome'
 
 if __name__ == '__main__':
+
     CimaCamApp().run()
