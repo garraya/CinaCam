@@ -18,20 +18,19 @@ import cv2
 import numpy as np
 import os
 import shutil
+import time
 from datetime import datetime
 
 # --- Lógica de permisos y rutas para Android ---
 if platform == 'android':
     from jnius import autoclass
     from android.permissions import request_permissions, Permission
-    # IMPORTANTE: Definimos esto global para usarlo correctamente
     PythonActivity = autoclass('org.kivy.android.PythonActivity')
 
-# --- CONFIGURACIÓN PARA PC ---
 if platform not in ['android', 'ios']:
     Window.size = (400, 750)
 
-# --- CLASE CÁMARA ---
+# --- CLASE CÁMARA (Lógica Fuerza Bruta) ---
 class KivyCamera(Image):
     is_recording = BooleanProperty(False)
     is_paused = BooleanProperty(False)
@@ -45,46 +44,63 @@ class KivyCamera(Image):
         self.fps = 30
 
     def start_camera(self):
-        # 1. Liberar cámara anterior si existe
+        # 1. FUERZA BRUTA: Liberar todo lo que pueda estar trabado
         if self.capture:
-            self.capture.release()
+            try:
+                self.capture.release()
+            except: pass
             self.capture = None
+        
+        # Pequeña pausa para que el OS libere el hardware
+        if platform == 'android':
+            time.sleep(0.2)
 
         found = False
         log_intentos = ""
-        possible_indices = [0, 1, 2, 3] # Probamos las cámaras más comunes
         
-        for i in possible_indices:
-            try:
-                # INTENTO A: Método nativo de Android (El truco nuevo)
-                # cv2.CAP_ANDROID suele ser el valor 700, ayuda a conectar directo al hardware
-                temp_cap = cv2.VideoCapture(i, cv2.CAP_ANDROID)
-                
-                if not temp_cap.isOpened():
-                    # INTENTO B: Método Estándar (Por si el A falla)
-                    temp_cap = cv2.VideoCapture(i)
-
-                if temp_cap.isOpened():
-                    # Leer frame de prueba para confirmar que es real
-                    ret, frame = temp_cap.read()
-                    if ret and frame is not None and frame.size > 0:
-                        self.capture = temp_cap
-                        self.error_message = "" # ¡ÉXITO! Borramos el error
-                        Clock.schedule_interval(self.update, 1.0 / self.fps)
-                        found = True
-                        print(f"Cámara encontrada en índice {i}")
-                        break
+        # PROBAR ÍNDICES
+        # Primero probamos el 0 (trasera principal) y 1 (frontal/trasera gran angular)
+        indices = [0, 1, 2, 3]
+        
+        # DEFINIR MÉTODOS DE CONEXIÓN (APIs)
+        # CAP_ANDROID (700): Nativo Android (Mejor para Samsung/Xiaomi)
+        # CAP_V4L2 (200): Driver genérico Linux (Mejor para Motorola/Viejos)
+        # CAP_ANY (0): Automático
+        apis = [cv2.CAP_ANDROID, cv2.CAP_V4L2, cv2.CAP_ANY]
+        
+        for i in indices:
+            for api in apis:
+                try:
+                    # Nombre de la API para el log
+                    api_name = "NATIVA" if api == 700 else ("LINUX" if api == 200 else "AUTO")
+                    
+                    print(f"Probando Cam {i} con API {api_name}...")
+                    temp_cap = cv2.VideoCapture(i, api)
+                    
+                    # Truco: A veces hay que 'leer' para que se despierte, isOpened no basta
+                    if temp_cap.isOpened():
+                        # Leer 2 frames para purgar buffer
+                        temp_cap.read()
+                        ret, frame = temp_cap.read()
+                        
+                        if ret and frame is not None and frame.size > 0:
+                            self.capture = temp_cap
+                            self.error_message = ""
+                            Clock.schedule_interval(self.update, 1.0 / self.fps)
+                            found = True
+                            print(f"¡ÉXITO! Cámara {i} con API {api_name}")
+                            return # Salir de todos los bucles
+                        else:
+                            log_intentos += f"Cam {i} ({api_name}): Pantalla Negra\n"
+                            temp_cap.release()
                     else:
-                        log_intentos += f"Cam {i}: Abre pero pantalla negra.\n"
-                        temp_cap.release()
-                else:
-                    log_intentos += f"Cam {i}: Bloqueada/No existe.\n"
-            
-            except Exception as e:
-                log_intentos += f"Cam {i} Error: {str(e)}\n"
+                        log_intentos += f"Cam {i} ({api_name}): No abre\n"
+                
+                except Exception as e:
+                    log_intentos += f"Err {i}: {str(e)}\n"
 
         if not found:
-            self.error_message = f"ERROR FINAL:\n{log_intentos}\nTIP: Reinicia el celular."
+            self.error_message = f"ERROR FINAL:\n{log_intentos}\nTIP: Ve a Ajustes de Android > Apps > CimaCam > Permisos y verifica que SI tenga permiso de CÁMARA."
 
     def stop_camera(self):
         Clock.unschedule(self.update)
@@ -105,10 +121,16 @@ class KivyCamera(Image):
 
                 self.current_clean_frame = frame
 
-                scale = 640 / frame.shape[0]
-                w = int(frame.shape[1] * scale)
-                h = int(frame.shape[0] * scale)
-                frame_resized = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+                # Optimización de vista previa
+                h, w = frame.shape[:2]
+                # Escalar solo si es muy grande para no trabar la UI
+                if h > 640:
+                    scale = 640 / h
+                    w = int(w * scale)
+                    h = int(h * scale)
+                    frame_resized = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+                else:
+                    frame_resized = frame
 
                 buf = cv2.flip(frame_resized, 0).tobytes()
                 texture = Texture.create(size=(frame_resized.shape[1], frame_resized.shape[0]), colorfmt='bgr')
@@ -117,7 +139,7 @@ class KivyCamera(Image):
 
     def take_photo(self):
         if not hasattr(self, 'current_clean_frame') or self.current_clean_frame is None:
-            self.error_message = "Error: Cámara no lista"
+            self.error_message = "Espera a tener imagen..."
             return
         app = App.get_running_app()
         try:
@@ -127,7 +149,7 @@ class KivyCamera(Image):
             filename = f"{app.path_puesto}/{prefix}_Foto_{datetime.now().strftime('%H%M%S')}.jpg"
             cv2.imwrite(filename, self.current_clean_frame)
             self.capture_count += 1
-            self.error_message = "FOTO OK"
+            self.error_message = "FOTO GUARDADA"
         except Exception as e:
             self.error_message = f"Error Foto: {e}"
 
@@ -142,12 +164,14 @@ class KivyCamera(Image):
                     os.makedirs(app.path_puesto, exist_ok=True)
                 prefix = app.current_measurement_type[:3]
                 filename = f"{app.path_puesto}/{prefix}_Video_{datetime.now().strftime('%H%M%S')}.mp4"
+                
                 w_cam = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
                 h_cam = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 if platform == 'android':
                     w_video, h_video = h_cam, w_cam
                 else:
                     w_video, h_video = w_cam, h_cam
+                    
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 self.video_writer = cv2.VideoWriter(filename, fourcc, 30.0, (w_video, h_video))
                 if self.video_writer.isOpened():
@@ -283,7 +307,7 @@ ScreenManager:
             size_hint_y: 0.1
 
         Label:
-            text: "Gestión Inteligente v0.5"
+            text: "Gestión Inteligente v0.6"
             color: (0.6, 0.6, 0.6, 1)
             size_hint_y: 0.1
 
@@ -453,23 +477,33 @@ ScreenManager:
             opacity: 0.4 if app.current_guide_image else 0
             fit_mode: "contain"
 
+        # --- LABEL DE ERROR MEJORADO ---
         Label:
             text: qrcam.error_message
-            color: color_red if "NO" in self.text or "Err" in self.text else color_gold
+            color: color_red if "Err" in self.text or "NO" in self.text else color_gold
             bold: True
-            font_size: sp(14)
+            font_size: sp(12)
             size_hint_y: None
-            height: dp(100)
+            height: dp(150)
             text_size: self.size
             halign: 'center'
             valign: 'center'
-            pos_hint: {'center_x': 0.5, 'top': 0.8}
+            pos_hint: {'center_x': 0.5, 'top': 0.85}
             canvas.before:
                 Color:
-                    rgba: (0,0,0,0.6) if self.text else (0,0,0,0)
+                    rgba: (0,0,0,0.7) if self.text else (0,0,0,0)
                 Rectangle:
                     pos: self.pos
                     size: self.size
+
+        # BOTÓN REINTENTAR CÁMARA (NUEVO)
+        BotonCam:
+            text: "REINICIAR\\nCAMARA"
+            size: (dp(80), dp(50))
+            pos_hint: {'center_x': 0.5, 'center_y': 0.5}
+            opacity: 1 if "Err" in qrcam.error_message else 0
+            disabled: not ("Err" in qrcam.error_message)
+            on_release: qrcam.start_camera()
 
         BoxLayout:
             size_hint: (1, None)
@@ -621,7 +655,6 @@ class ProjectScreen(Screen):
             app.root.current = 'measurement'
 
     def cargar_carpetas(self):
-        # PROTECCION CONTRA CRASH: Usamos try/except
         try:
             app = App.get_running_app()
             path = app.get_storage_path()
@@ -630,7 +663,6 @@ class ProjectScreen(Screen):
 
             if path and os.path.exists(path):
                 try:
-                    # Leemos carpetas
                     carpetas = [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
                     for c in carpetas:
                         btn = Button(
@@ -642,7 +674,6 @@ class ProjectScreen(Screen):
                         btn.bind(on_release=lambda x, nom=c: self.mostrar_opciones(nom))
                         lista.add_widget(btn)
                 except Exception as e:
-                    # Si falla leer, mostramos error pero NO cerramos la app
                     err_lbl = Label(text=f"Error leyendo carpetas: {str(e)}", color=(1,0,0,1), size_hint_y=None, height=dp(30))
                     lista.add_widget(err_lbl)
         except Exception as e_global:
@@ -698,12 +729,8 @@ class JobScreen(Screen):
         puesto = self.ids.puesto_input.text
         if puesto:
             app.current_post = puesto
-            
-            # Crear nombre carpeta
             folder = f"{app.current_measurement_type}_{puesto}_{datetime.now().strftime('%H%M')}"
-            
             base = app.path_empresa
-            # Fallback si path_empresa esta vacio
             if not base:
                 storage = app.get_storage_path()
                 base = os.path.join(storage, app.current_company) if storage else "/sdcard"
@@ -771,11 +798,9 @@ class CimaCamApp(App):
         Window.bind(on_keyboard=self.on_key)
         return Builder.load_string(KV)
 
-    # --- MÉTODO CORREGIDO DE ALMACENAMIENTO ---
     def get_storage_path(self):
         if platform == 'android':
             try:
-                # CORRECCIÓN CLAVE: Usamos la actividad, no la clase Context
                 context = PythonActivity.mActivity 
                 external_file = context.getExternalFilesDir(None)
                 if external_file:
@@ -824,7 +849,6 @@ if __name__ == '__main__':
         error_trace = traceback.format_exc()
         try:
             if platform == 'android':
-                # Re-definimos por si acaso crash ocurre antes de importar
                 from jnius import autoclass
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 context = PythonActivity.mActivity
@@ -837,4 +861,3 @@ if __name__ == '__main__':
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(f"--- ERROR {datetime.now()} ---\n{error_trace}")
         except: pass
-
