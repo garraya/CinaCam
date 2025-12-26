@@ -6,7 +6,6 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.popup import Popup
-from kivy.uix.scrollview import ScrollView
 from kivy.clock import Clock
 from kivy.graphics.texture import Texture
 from kivy.utils import platform
@@ -21,22 +20,17 @@ import shutil
 import time
 from datetime import datetime
 
-# --- Lógica de permisos y rutas para Android ---
-if platform == 'android':
-    from jnius import autoclass
-    from android.permissions import request_permissions, Permission
-    PythonActivity = autoclass('org.kivy.android.PythonActivity')
-
+# --- CONFIGURACIÓN PARA PC ---
 if platform not in ['android', 'ios']:
     Window.size = (400, 750)
 
-# --- CLASE CÁMARA (Lógica Fuerza Bruta) ---
+# --- CLASE CÁMARA MEJORADA ---
 class KivyCamera(Image):
     is_recording = BooleanProperty(False)
     is_paused = BooleanProperty(False)
     video_writer = None
     capture_count = NumericProperty(0)
-    error_message = StringProperty("Iniciando...")
+    error_message = StringProperty("Esperando...")
 
     def __init__(self, **kwargs):
         super(KivyCamera, self).__init__(**kwargs)
@@ -44,63 +38,69 @@ class KivyCamera(Image):
         self.fps = 30
 
     def start_camera(self):
-        # 1. FUERZA BRUTA: Liberar todo lo que pueda estar trabado
+        # 1. Verificar Permisos antes de nada
+        if platform == 'android':
+            from android.permissions import check_permission, Permission
+            if not check_permission(Permission.CAMERA):
+                self.error_message = "FALTA PERMISO DE CAMARA\nReinicia la App y acepta los permisos."
+                return
+
+        # 2. Cerrar cámara anterior
         if self.capture:
-            try:
-                self.capture.release()
+            try: self.capture.release()
             except: pass
             self.capture = None
-        
-        # Pequeña pausa para que el OS libere el hardware
-        if platform == 'android':
-            time.sleep(0.2)
 
+        self.error_message = "Iniciando..."
+        # Ejecutar búsqueda con un pequeño retraso para que la UI cargue
+        Clock.schedule_once(self._start_camera_slow, 0.2)
+
+    def _start_camera_slow(self, dt):
+        # MODO LENTO Y SEGURO
         found = False
-        log_intentos = ""
+        log = ""
         
-        # PROBAR ÍNDICES
-        # Primero probamos el 0 (trasera principal) y 1 (frontal/trasera gran angular)
-        indices = [0, 1, 2, 3]
+        # Probamos cámara 0 (Trasera/Auto) y 1 (Frontal/Auto)
+        # Usamos cv2.CAP_ANY (0) que es lo más compatible
+        indices_a_probar = [0, 1, 2, 3]
         
-        # DEFINIR MÉTODOS DE CONEXIÓN (APIs)
-        # CAP_ANDROID (700): Nativo Android (Mejor para Samsung/Xiaomi)
-        # CAP_V4L2 (200): Driver genérico Linux (Mejor para Motorola/Viejos)
-        # CAP_ANY (0): Automático
-        apis = [cv2.CAP_ANDROID, cv2.CAP_V4L2, cv2.CAP_ANY]
-        
-        for i in indices:
-            for api in apis:
-                try:
-                    # Nombre de la API para el log
-                    api_name = "NATIVA" if api == 700 else ("LINUX" if api == 200 else "AUTO")
-                    
-                    print(f"Probando Cam {i} con API {api_name}...")
-                    temp_cap = cv2.VideoCapture(i, api)
-                    
-                    # Truco: A veces hay que 'leer' para que se despierte, isOpened no basta
-                    if temp_cap.isOpened():
-                        # Leer 2 frames para purgar buffer
-                        temp_cap.read()
-                        ret, frame = temp_cap.read()
-                        
-                        if ret and frame is not None and frame.size > 0:
-                            self.capture = temp_cap
-                            self.error_message = ""
-                            Clock.schedule_interval(self.update, 1.0 / self.fps)
-                            found = True
-                            print(f"¡ÉXITO! Cámara {i} con API {api_name}")
-                            return # Salir de todos los bucles
-                        else:
-                            log_intentos += f"Cam {i} ({api_name}): Pantalla Negra\n"
-                            temp_cap.release()
-                    else:
-                        log_intentos += f"Cam {i} ({api_name}): No abre\n"
+        for i in indices_a_probar:
+            try:
+                print(f"Probando cámara {i}...")
+                cap = cv2.VideoCapture(i)
                 
-                except Exception as e:
-                    log_intentos += f"Err {i}: {str(e)}\n"
+                # Configuración básica (Ayuda a algunos drivers)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                
+                if cap.isOpened():
+                    # Leer varios frames para "calentar" el sensor
+                    for _ in range(5):
+                        cap.read()
+                        
+                    ret, frame = cap.read()
+                    if ret and frame is not None and frame.size > 0:
+                        self.capture = cap
+                        self.error_message = "" # ÉXITO
+                        Clock.schedule_interval(self.update, 1.0 / self.fps)
+                        found = True
+                        print(f"Cámara {i} ABRIO CORRECTAMENTE")
+                        return
+                    else:
+                        log += f"Cam {i}: Abre pero imagen vacía.\n"
+                        cap.release()
+                else:
+                    log += f"Cam {i}: Ocupada o cerrada.\n"
+                
+                # PAUSA CRÍTICA: Esperar al driver antes de probar la siguiente
+                if platform == 'android':
+                    time.sleep(0.5)
+                    
+            except Exception as e:
+                log += f"Err {i}: {str(e)}\n"
 
         if not found:
-            self.error_message = f"ERROR FINAL:\n{log_intentos}\nTIP: Ve a Ajustes de Android > Apps > CimaCam > Permisos y verifica que SI tenga permiso de CÁMARA."
+            self.error_message = f"ERROR:\n{log}\nIntenta reiniciar el celular."
 
     def stop_camera(self):
         Clock.unschedule(self.update)
@@ -116,30 +116,32 @@ class KivyCamera(Image):
                 if platform == 'android':
                     frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
+                # GRABAR
                 if self.is_recording and not self.is_paused and self.video_writer:
                     self.video_writer.write(frame)
 
                 self.current_clean_frame = frame
 
-                # Optimización de vista previa
-                h, w = frame.shape[:2]
-                # Escalar solo si es muy grande para no trabar la UI
-                if h > 640:
-                    scale = 640 / h
-                    w = int(w * scale)
-                    h = int(h * scale)
-                    frame_resized = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
-                else:
-                    frame_resized = frame
+                # MOSTRAR (Escalado para rendimiento)
+                try:
+                    h, w = frame.shape[:2]
+                    if h > 800: # Si es muy grande, achicar para la pantalla
+                        scale = 800 / h
+                        w = int(w * scale)
+                        h = int(h * scale)
+                        frame_resized = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+                    else:
+                        frame_resized = frame
 
-                buf = cv2.flip(frame_resized, 0).tobytes()
-                texture = Texture.create(size=(frame_resized.shape[1], frame_resized.shape[0]), colorfmt='bgr')
-                texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
-                self.texture = texture
+                    buf = cv2.flip(frame_resized, 0).tobytes()
+                    texture = Texture.create(size=(frame_resized.shape[1], frame_resized.shape[0]), colorfmt='bgr')
+                    texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
+                    self.texture = texture
+                except: pass
 
     def take_photo(self):
         if not hasattr(self, 'current_clean_frame') or self.current_clean_frame is None:
-            self.error_message = "Espera a tener imagen..."
+            self.error_message = "Espera imagen..."
             return
         app = App.get_running_app()
         try:
@@ -149,13 +151,13 @@ class KivyCamera(Image):
             filename = f"{app.path_puesto}/{prefix}_Foto_{datetime.now().strftime('%H%M%S')}.jpg"
             cv2.imwrite(filename, self.current_clean_frame)
             self.capture_count += 1
-            self.error_message = "FOTO GUARDADA"
+            self.error_message = "FOTO OK"
         except Exception as e:
-            self.error_message = f"Error Foto: {e}"
+            self.error_message = f"Error: {e}"
 
     def toggle_record_stop(self):
         if self.capture is None:
-            self.error_message = "Error: Sin Cámara"
+            self.error_message = "Sin Cámara"
             return
         app = App.get_running_app()
         if not self.is_recording:
@@ -165,23 +167,20 @@ class KivyCamera(Image):
                 prefix = app.current_measurement_type[:3]
                 filename = f"{app.path_puesto}/{prefix}_Video_{datetime.now().strftime('%H%M%S')}.mp4"
                 
-                w_cam = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-                h_cam = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                if platform == 'android':
-                    w_video, h_video = h_cam, w_cam
-                else:
-                    w_video, h_video = w_cam, h_cam
+                w = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                if platform == 'android': w, h = h, w
                     
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                self.video_writer = cv2.VideoWriter(filename, fourcc, 30.0, (w_video, h_video))
+                self.video_writer = cv2.VideoWriter(filename, fourcc, 30.0, (w, h))
                 if self.video_writer.isOpened():
                     self.is_recording = True
                     self.is_paused = False
                     self.error_message = "GRABANDO..."
                 else:
-                    self.error_message = "Error: Falló VideoWriter"
+                    self.error_message = "Error Video"
             except Exception as e:
-                self.error_message = f"Error Video: {e}"
+                self.error_message = f"Error: {e}"
         else:
             self.close_video_file()
 
@@ -207,7 +206,7 @@ class KivyCamera(Image):
 
 Factory.register('KivyCamera', cls=KivyCamera)
 
-# --- DISEÑO KV ---
+# --- DISEÑO KV (No cambia, solo lo incluyo para que copies todo junto) ---
 KV = '''
 #:import dp kivy.metrics.dp
 #:import sp kivy.metrics.sp
@@ -307,7 +306,7 @@ ScreenManager:
             size_hint_y: 0.1
 
         Label:
-            text: "Gestión Inteligente v0.6"
+            text: "Gestión Inteligente v0.8"
             color: (0.6, 0.6, 0.6, 1)
             size_hint_y: 0.1
 
@@ -477,12 +476,12 @@ ScreenManager:
             opacity: 0.4 if app.current_guide_image else 0
             fit_mode: "contain"
 
-        # --- LABEL DE ERROR MEJORADO ---
+        # LABEL ERROR
         Label:
             text: qrcam.error_message
-            color: color_red if "Err" in self.text or "NO" in self.text else color_gold
+            color: color_red if "Err" in self.text or "FALTA" in self.text else color_gold
             bold: True
-            font_size: sp(12)
+            font_size: sp(14)
             size_hint_y: None
             height: dp(150)
             text_size: self.size
@@ -496,13 +495,13 @@ ScreenManager:
                     pos: self.pos
                     size: self.size
 
-        # BOTÓN REINTENTAR CÁMARA (NUEVO)
+        # BOTÓN REINTENTAR
         BotonCam:
-            text: "REINICIAR\\nCAMARA"
-            size: (dp(80), dp(50))
+            text: "REINTENTAR"
+            size: (dp(85), dp(50))
             pos_hint: {'center_x': 0.5, 'center_y': 0.5}
-            opacity: 1 if "Err" in qrcam.error_message else 0
-            disabled: not ("Err" in qrcam.error_message)
+            opacity: 1 if "Err" in qrcam.error_message or "FALTA" in qrcam.error_message else 0
+            disabled: not ("Err" in qrcam.error_message or "FALTA" in qrcam.error_message)
             on_release: qrcam.start_camera()
 
         BoxLayout:
@@ -674,10 +673,10 @@ class ProjectScreen(Screen):
                         btn.bind(on_release=lambda x, nom=c: self.mostrar_opciones(nom))
                         lista.add_widget(btn)
                 except Exception as e:
-                    err_lbl = Label(text=f"Error leyendo carpetas: {str(e)}", color=(1,0,0,1), size_hint_y=None, height=dp(30))
+                    err_lbl = Label(text=f"Error carpetas: {str(e)}", color=(1,0,0,1), size_hint_y=None, height=dp(30))
                     lista.add_widget(err_lbl)
         except Exception as e_global:
-            print(f"Error fatal cargar_carpetas: {e_global}")
+            print(f"Error cargar_carpetas: {e_global}")
 
     def mostrar_opciones(self, nombre_carpeta):
         try:
@@ -689,7 +688,7 @@ class ProjectScreen(Screen):
                 archs = os.listdir(ruta)
                 contenido = "\n".join(archs[:10])
                 if len(archs) > 10: contenido += "\n..."
-            except: contenido = "Vacia o ilegible"
+            except: contenido = "Vacía"
 
             layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
             lbl = Label(text=f"{nombre_carpeta}\n\n{contenido}")
@@ -801,12 +800,13 @@ class CimaCamApp(App):
     def get_storage_path(self):
         if platform == 'android':
             try:
-                context = PythonActivity.mActivity 
-                external_file = context.getExternalFilesDir(None)
-                if external_file:
-                    return os.path.join(external_file.getAbsolutePath(), "CimaCam_Datos")
+                if PythonActivity.mActivity:
+                    context = PythonActivity.mActivity 
+                    external_file = context.getExternalFilesDir(None)
+                    if external_file:
+                        return os.path.join(external_file.getAbsolutePath(), "CimaCam_Datos")
             except Exception as e:
-                print(f"Error get_storage_path: {e}")
+                print(f"Error storage: {e}")
             return "/sdcard/CimaCam_Datos"
         else:
             return os.path.join(os.getcwd(), "CimaCam_Datos")
@@ -819,6 +819,7 @@ class CimaCamApp(App):
 
         if platform == 'android':
             try:
+                from android.permissions import request_permissions, Permission
                 request_permissions([
                     Permission.CAMERA,
                     Permission.RECORD_AUDIO,
