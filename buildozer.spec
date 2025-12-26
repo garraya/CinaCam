@@ -15,7 +15,7 @@ requirements = python3, kivy==2.3.0, opencv, android
 orientation = portrait
 fullscreen = 0
 android.permissions = CAMERA,RECORD_AUDIO,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,INTERNET
-android.api = 31
+android.api = 33
 android.minapi = 24
 android.ndk = 25b
 android.accept_sdk_license = True
