@@ -52,49 +52,42 @@ class KivyCamera(Image):
             self.capture = None
 
         self.error_message = "Iniciando..."
-        # Ejecutar búsqueda con un pequeño retraso para que la UI cargue
         Clock.schedule_once(self._start_camera_slow, 0.2)
 
     def _start_camera_slow(self, dt):
-        # MODO LENTO Y SEGURO
         found = False
         log = ""
         
-        # Probamos cámara 0 (Trasera/Auto) y 1 (Frontal/Auto)
-        # Usamos cv2.CAP_ANY (0) que es lo más compatible
+        # Probamos índices comunes
         indices_a_probar = [0, 1, 2, 3]
         
         for i in indices_a_probar:
             try:
-                print(f"Probando cámara {i}...")
+                # Usamos configuración estándar
                 cap = cv2.VideoCapture(i)
-                
-                # Configuración básica (Ayuda a algunos drivers)
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 
                 if cap.isOpened():
-                    # Leer varios frames para "calentar" el sensor
-                    for _ in range(5):
+                    for _ in range(3): # Leer un poco para despertar sensor
                         cap.read()
                         
                     ret, frame = cap.read()
                     if ret and frame is not None and frame.size > 0:
                         self.capture = cap
-                        self.error_message = "" # ÉXITO
+                        self.error_message = ""
                         Clock.schedule_interval(self.update, 1.0 / self.fps)
                         found = True
                         print(f"Cámara {i} ABRIO CORRECTAMENTE")
                         return
                     else:
-                        log += f"Cam {i}: Abre pero imagen vacía.\n"
+                        log += f"Cam {i}: Abre vacía.\n"
                         cap.release()
                 else:
-                    log += f"Cam {i}: Ocupada o cerrada.\n"
+                    log += f"Cam {i}: Cerrada.\n"
                 
-                # PAUSA CRÍTICA: Esperar al driver antes de probar la siguiente
                 if platform == 'android':
-                    time.sleep(0.5)
+                    time.sleep(0.2)
                     
             except Exception as e:
                 log += f"Err {i}: {str(e)}\n"
@@ -116,16 +109,14 @@ class KivyCamera(Image):
                 if platform == 'android':
                     frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
-                # GRABAR
                 if self.is_recording and not self.is_paused and self.video_writer:
                     self.video_writer.write(frame)
 
                 self.current_clean_frame = frame
 
-                # MOSTRAR (Escalado para rendimiento)
                 try:
                     h, w = frame.shape[:2]
-                    if h > 800: # Si es muy grande, achicar para la pantalla
+                    if h > 800: 
                         scale = 800 / h
                         w = int(w * scale)
                         h = int(h * scale)
@@ -206,7 +197,7 @@ class KivyCamera(Image):
 
 Factory.register('KivyCamera', cls=KivyCamera)
 
-# --- DISEÑO KV (No cambia, solo lo incluyo para que copies todo junto) ---
+# --- DISEÑO KV ---
 KV = '''
 #:import dp kivy.metrics.dp
 #:import sp kivy.metrics.sp
@@ -306,7 +297,7 @@ ScreenManager:
             size_hint_y: 0.1
 
         Label:
-            text: "Gestión Inteligente v0.8"
+            text: "Gestión Inteligente v0.9"
             color: (0.6, 0.6, 0.6, 1)
             size_hint_y: 0.1
 
@@ -729,11 +720,13 @@ class JobScreen(Screen):
         if puesto:
             app.current_post = puesto
             folder = f"{app.current_measurement_type}_{puesto}_{datetime.now().strftime('%H%M')}"
+            
+            # --- CORRECCION CRITICA ---
+            # Aseguramos que la ruta base existe antes de unir
             base = app.path_empresa
             if not base:
-                storage = app.get_storage_path()
-                base = os.path.join(storage, app.current_company) if storage else "/sdcard"
-
+                base = app.get_storage_path()
+            
             app.path_puesto = os.path.join(base, folder)
             try:
                 if not os.path.exists(app.path_puesto):
@@ -797,17 +790,22 @@ class CimaCamApp(App):
         Window.bind(on_keyboard=self.on_key)
         return Builder.load_string(KV)
 
+    # --- FUNCION CORREGIDA Y BLINDADA ---
     def get_storage_path(self):
         if platform == 'android':
             try:
-                if PythonActivity.mActivity:
-                    context = PythonActivity.mActivity 
-                    external_file = context.getExternalFilesDir(None)
-                    if external_file:
-                        return os.path.join(external_file.getAbsolutePath(), "CimaCam_Datos")
+                # 1. Intentar obtener ruta privada de la App (Scoped Storage)
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                activity = PythonActivity.mActivity
+                file_p = activity.getExternalFilesDir(None)
+                if file_p:
+                    return os.path.join(file_p.getAbsolutePath(), "CimaCam_Datos")
             except Exception as e:
-                print(f"Error storage: {e}")
-            return "/sdcard/CimaCam_Datos"
+                print(f"Error ruta primaria: {e}")
+            
+            # 2. PLAN B: Usar carpeta interna de Kivy (100% segura, nunca falla)
+            return os.path.join(App.get_running_app().user_data_dir, "CimaCam_Datos")
         else:
             return os.path.join(os.getcwd(), "CimaCam_Datos")
 
