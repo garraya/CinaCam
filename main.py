@@ -7,7 +7,6 @@ from kivy.graphics.texture import Texture
 from kivy.utils import platform
 from kivy.core.window import Window
 from kivy.properties import StringProperty, NumericProperty, BooleanProperty, ListProperty
-from kivy.metrics import dp, sp
 from kivy.factory import Factory 
 
 import cv2
@@ -15,56 +14,71 @@ import numpy as np
 import os
 from datetime import datetime
 
-# --- IMPORTANTE: Lógica de almacenamiento segura para Android ---
+# --- Lógica de permisos para Android ---
 if platform == 'android':
     from jnius import autoclass
-    # Usamos Environment para obtener rutas estándar de Android si fuera necesario
-    Environment = autoclass('android.os.Environment')
-    # Contexto actual para pedir rutas específicas de la app
-    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+    from android.permissions import request_permissions, Permission
     Context = autoclass('android.content.Context')
 
 # --- CONFIGURACIÓN PARA PC ---
 if platform not in ['android', 'ios']:
     Window.size = (400, 750)
 
-# --- CLASE CÁMARA (LIGERA - SIN MEDIAPIPE) ---
+# --- CLASE CÁMARA ---
 class KivyCamera(Image):
     is_recording = BooleanProperty(False)
     is_paused = BooleanProperty(False)
     video_writer = None
     capture_count = NumericProperty(0)
-    
+    # Mensaje de error visible en pantalla
+    error_message = StringProperty("Iniciando cámara...")
+
     def __init__(self, **kwargs):
         super(KivyCamera, self).__init__(**kwargs)
         self.capture = None
         self.fps = 30
 
     def start_camera(self):
-        # Intentar buscar la cámara en varios índices
+        # Si ya existe, liberarla primero
+        if self.capture:
+            self.capture.release()
+            self.capture = None
+
         found = False
-        # Probamos del índice 0 al 5 (algunos celulares usan el 2 o el 3 para la trasera)
-        possible_indices = [0, 1, 2, 3, 4]
+        log_intentos = ""
         
-        for index in possible_indices:
-            print(f"Probando cámara índice {index}...")
-            temp_cap = cv2.VideoCapture(index)
-            
-            if temp_cap.isOpened():
-                # Leemos un frame de prueba para ver si es real
-                ret, frame = temp_cap.read()
-                if ret and frame is not None and frame.shape[0] > 0:
-                    self.capture = temp_cap
-                    self.fps = 30
-                    self.error_message = f"Cámara encontrada en índice: {index}"
-                    Clock.schedule_interval(self.update, 1.0 / self.fps)
-                    found = True
-                    break
+        # Intentamos índices comunes. A veces el 0 es frontal, 1 trasera, o al revés.
+        # Algunos teléfonos requieren una resolución específica para arrancar.
+        possible_indices = [0, 1, 2, 3]
+        
+        for i in possible_indices:
+            try:
+                temp_cap = cv2.VideoCapture(i)
+                # TRUCO: Forzar resolución estándar HD. 
+                # Muchas cámaras fallan si no se les pide un tamaño específico.
+                temp_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                temp_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                
+                if temp_cap.isOpened():
+                    # Leer un frame real para confirmar que funciona
+                    ret, frame = temp_cap.read()
+                    if ret and frame is not None:
+                        self.capture = temp_cap
+                        self.error_message = "" # Borrar error si funciona
+                        Clock.schedule_interval(self.update, 1.0 / self.fps)
+                        found = True
+                        print(f"Cámara encontrada en índice {i}")
+                        break
+                    else:
+                        log_intentos += f"Indice {i}: Abre pero no da imagen.\n"
+                        temp_cap.release()
                 else:
-                    temp_cap.release()
-            
+                    log_intentos += f"Indice {i}: No abre.\n"
+            except Exception as e:
+                log_intentos += f"Indice {i} Error: {str(e)}\n"
+
         if not found:
-            self.error_message = "ERROR CRÍTICO: Ninguna cámara respondió (0-4)."
+            self.error_message = f"ERROR CAMARA:\n{log_intentos}\nVerificar Permisos."
 
     def stop_camera(self):
         Clock.unschedule(self.update)
@@ -77,52 +91,59 @@ class KivyCamera(Image):
         if self.capture:
             ret, frame = self.capture.read()
             if ret:
-                # Rotación para Android (portrait)
+                # Rotación: En Android la imagen suele venir 'acostada'
                 if platform == 'android':
                     frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
-                # GRABAR solo si está REC y NO PAUSADO
-                # Nota: Se graba el video "limpio" (sin la silueta superpuesta)
+                # GRABAR (Video limpio)
                 if self.is_recording and not self.is_paused and self.video_writer:
                     self.video_writer.write(frame)
 
-                # Guardamos el frame limpio para fotos
+                # Guardar referencia limpia para FOTO
                 self.current_clean_frame = frame
 
-                # Preparar frame para mostrar en pantalla Kivy
-                # Redimensionar para mejorar rendimiento en pantalla
-                scale_percent = 640 / frame.shape[0]
-                width = int(frame.shape[1] * scale_percent)
-                height = int(frame.shape[0] * scale_percent)
-                dim = (width, height)
-                frame_resized = cv2.resize(frame, dim, interpolation = cv2.INTER_LINEAR)
+                # MOSTRAR EN PANTALLA (Textura Kivy)
+                # Redimensionamos para que la UI sea fluida
+                scale = 640 / frame.shape[0] # Escalar basado en altura
+                w = int(frame.shape[1] * scale)
+                h = int(frame.shape[0] * scale)
+                frame_resized = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
 
-                # Convertir a textura Kivy
                 buf = cv2.flip(frame_resized, 0).tobytes()
                 texture = Texture.create(size=(frame_resized.shape[1], frame_resized.shape[0]), colorfmt='bgr')
                 texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
                 self.texture = texture
 
-    # --- LÓGICA DE LOS BOTONES ---
-
-    # FOTO
+    # --- FOTO ---
     def take_photo(self):
-        app = App.get_running_app()
-        if hasattr(self, 'current_clean_frame'):
-            try:
-                if not os.path.exists(app.path_puesto):
-                    os.makedirs(app.path_puesto, exist_ok=True)
-                    
-                prefix = app.current_measurement_type[:3]
-                filename = f"{app.path_puesto}/{prefix}_Foto_{datetime.now().strftime('%H%M%S')}.jpg"
-                cv2.imwrite(filename, self.current_clean_frame)
-                self.capture_count += 1
-                print(f"Foto guardada: {filename}")
-            except Exception as e:
-                print(f"Error al guardar foto: {e}")
+        # PROTECCIÓN: Si no hay cámara, no hacer nada (evita crash)
+        if not hasattr(self, 'current_clean_frame') or self.current_clean_frame is None:
+            self.error_message = "Error: No hay imagen de cámara para foto."
+            return
 
-    # PLAY / STOP
+        app = App.get_running_app()
+        try:
+            if not os.path.exists(app.path_puesto):
+                os.makedirs(app.path_puesto, exist_ok=True)
+                
+            prefix = app.current_measurement_type[:3]
+            filename = f"{app.path_puesto}/{prefix}_Foto_{datetime.now().strftime('%H%M%S')}.jpg"
+            
+            # Guardar
+            cv2.imwrite(filename, self.current_clean_frame)
+            
+            self.capture_count += 1
+            self.error_message = f"FOTO OK"
+        except Exception as e:
+            self.error_message = f"Error guardando foto: {e}"
+
+    # --- VIDEO ---
     def toggle_record_stop(self):
+        # PROTECCIÓN: Si no hay cámara, mostrar error y salir
+        if self.capture is None:
+            self.error_message = "No se puede grabar: Cámara no detectada."
+            return
+
         app = App.get_running_app()
         
         if not self.is_recording:
@@ -134,31 +155,35 @@ class KivyCamera(Image):
                 prefix = app.current_measurement_type[:3]
                 filename = f"{app.path_puesto}/{prefix}_Video_{datetime.now().strftime('%H%M%S')}.mp4"
                 
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                # Obtener tamaño REAL de la cámara
+                w_cam = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h_cam = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 
-                # Ajustar dimensiones si estamos en Android (rotación)
+                # En Android invertimos dimensiones por la rotación
                 if platform == 'android':
-                    width, height = height, width
+                    w_video, h_video = h_cam, w_cam
+                else:
+                    w_video, h_video = w_cam, h_cam
 
-                self.video_writer = cv2.VideoWriter(filename, fourcc, 20.0, (width, height))
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                self.video_writer = cv2.VideoWriter(filename, fourcc, 30.0, (w_video, h_video))
                 
-                self.is_recording = True
-                self.is_paused = False
-                print(f"Grabando: {filename}")
+                if self.video_writer.isOpened():
+                    self.is_recording = True
+                    self.is_paused = False
+                    self.error_message = "GRABANDO..."
+                else:
+                    self.error_message = "Error: VideoWriter falló al abrir."
             except Exception as e:
-                print(f"Error al iniciar grabación: {e}")
+                self.error_message = f"Excepción Video: {e}"
         else:
-            # DETENER GRABACIÓN
+            # DETENER
             self.close_video_file()
 
-    # PAUSA
     def toggle_pause(self):
         if self.is_recording:
             self.is_paused = not self.is_paused
 
-    # FINALIZAR
     def exit_screen(self):
         if self.is_recording:
             self.close_video_file()
@@ -173,17 +198,16 @@ class KivyCamera(Image):
                 self.video_writer.release()
                 self.video_writer = None
             self.capture_count += 1
-            print("Video finalizado.")
+            self.error_message = "Video Guardado."
 
 Factory.register('KivyCamera', cls=KivyCamera)
 
-# --- DISEÑO KV ---
+# --- DISEÑO KV (Sin cambios mayores, solo ajustes visuales) ---
 KV = '''
 #:import dp kivy.metrics.dp
 #:import sp kivy.metrics.sp
 
 #:set color_gold (0.72, 0.54, 0.15, 1)
-#:set color_dark (0.1, 0.1, 0.1, 1)
 #:set color_black (0.05, 0.05, 0.05, 1)
 #:set color_white (0.95, 0.95, 0.95, 1)
 #:set color_red (0.8, 0.1, 0.1, 1)
@@ -193,26 +217,8 @@ KV = '''
     font_size: sp(16)
     color: color_white
 
-<TextInput>:
-    background_color: (0.15, 0.15, 0.15, 1)
-    foreground_color: color_white
-    cursor_color: color_gold
-    font_size: sp(18)
-    padding: [dp(15), dp(15)]
-    multiline: False
-    background_normal: ''
-    background_active: ''
-    canvas.after:
-        Color:
-            rgba: color_gold if self.focus else (0.3, 0.3, 0.3, 1)
-        Line:
-            width: dp(1.2)
-            rectangle: (self.x, self.y, self.width, self.height)
-
-# Botón Genérico
 <BotonECAM@Button>:
     background_normal: ''
-    background_down: ''
     background_color: color_gold
     color: color_white
     font_size: sp(18)
@@ -229,7 +235,6 @@ KV = '''
             size: self.size
             radius: [dp(30)]
 
-# Estilo Botones Cámara
 <BotonCam@Button>:
     background_normal: '' 
     background_color: (0.2, 0.2, 0.2, 1)
@@ -246,6 +251,22 @@ KV = '''
             pos: self.pos
             size: self.size
             radius: [dp(15)]
+
+<TextInput>:
+    background_color: (0.15, 0.15, 0.15, 1)
+    foreground_color: color_white
+    cursor_color: color_gold
+    font_size: sp(18)
+    padding: [dp(15), dp(15)]
+    multiline: False
+    background_normal: ''
+    background_active: ''
+    canvas.after:
+        Color:
+            rgba: color_gold if self.focus else (0.3, 0.3, 0.3, 1)
+        Line:
+            width: dp(1.2)
+            rectangle: (self.x, self.y, self.width, self.height)
 
 ScreenManager:
     WelcomeScreen:
@@ -366,23 +387,18 @@ ScreenManager:
                 BotonECAM:
                     text: "ERGONOMÍA"
                     on_release: root.select_type("ERGONOMIA")
-
                 BotonECAM:
-                    text: "INCENDIOS (Carga Fuego)"
+                    text: "INCENDIOS"
                     on_release: root.select_type("INCENDIOS")
-
                 BotonECAM:
                     text: "RUIDO LABORAL"
                     on_release: root.select_type("RUIDO")
-
                 BotonECAM:
                     text: "ILUMINACIÓN"
                     on_release: root.select_type("ILUMINACION")
-
                 BotonECAM:
                     text: "PUESTA A TIERRA"
                     on_release: root.select_type("PAT")
-
                 BotonECAM:
                     text: "TERMOGRAFÍA"
                     on_release: root.select_type("TERMOGRAFIA")
@@ -415,13 +431,6 @@ ScreenManager:
             size_hint_y: None
             height: dp(50)
 
-        Label:
-            text: "Ubicación / Sector / Equipo"
-            halign: 'left'
-            text_size: self.size
-            size_hint_y: None
-            height: dp(30)
-
         TextInput:
             id: puesto_input
             hint_text: "Ej: Nave Principal - Tablero 4"
@@ -438,19 +447,36 @@ ScreenManager:
 <CameraScreen>:
     name: 'camera'
     FloatLayout:
-        # CÁMARA
         KivyCamera:
             id: qrcam
             size_hint: (1, 1)
             fit_mode: "cover"
 
-        # --- CAPA GUÍA (SILUETA) ---
         Image:
             source: app.current_guide_image
             size_hint: (1, 1)
             allow_stretch: True
             opacity: 0.4 if app.current_guide_image else 0
             fit_mode: "contain"
+
+        # --- LABEL DE ESTADO / ERROR ---
+        Label:
+            text: qrcam.error_message
+            color: color_red if "Error" in self.text or "ERROR" in self.text else color_gold
+            bold: True
+            font_size: sp(14)
+            size_hint_y: None
+            height: dp(100)
+            text_size: self.size
+            halign: 'center'
+            valign: 'center'
+            pos_hint: {'center_x': 0.5, 'top': 0.8}
+            canvas.before:
+                Color:
+                    rgba: (0,0,0,0.6) if self.text else (0,0,0,0)
+                Rectangle:
+                    pos: self.pos
+                    size: self.size
 
         # --- INFO SUPERIOR ---
         BoxLayout:
@@ -479,7 +505,7 @@ ScreenManager:
                 text_size: self.size
                 bold: True
 
-        # --- AVISO DE ESTADO ---
+        # --- ESTADO GRABANDO ---
         Label:
             text: "● PAUSA" if (qrcam.is_recording and qrcam.is_paused) else ("● GRABANDO" if qrcam.is_recording else "")
             color: color_gold if qrcam.is_paused else color_red
@@ -488,7 +514,6 @@ ScreenManager:
             pos_hint: {'center_x': 0.5, 'center_y': 0.85}
             opacity: 1 if qrcam.is_recording else 0
 
-        # --- BOTÓN FLOTANTE PARA CAMBIAR GUÍA ---
         BotonCam:
             text: "GUÍA"
             size_hint: (None, None)
@@ -499,7 +524,7 @@ ScreenManager:
             font_size: sp(12)
             on_release: app.cycle_guide()
 
-        # --- CONTROLES INFERIORES (4 BOTONES) ---
+        # --- CONTROLES INFERIORES ---
         BoxLayout:
             size_hint: (1, None)
             height: dp(120)
@@ -513,20 +538,17 @@ ScreenManager:
                     pos: self.pos
                     size: self.size
 
-            # BOTON 1: FOTO
             BotonCam:
                 text: "FOTO"
                 background_color: (0.3, 0.3, 0.3, 1)
                 on_release: qrcam.take_photo()
 
-            # BOTON 2: PLAY / STOP (Cuadrado)
             BotonCam:
-                text: "■" if qrcam.is_recording else "▶"
-                font_size: sp(30)
+                text: "REC" if not qrcam.is_recording else "STOP"
+                font_size: sp(18)
                 background_color: color_red if qrcam.is_recording else color_green
                 on_release: qrcam.toggle_record_stop()
 
-            # BOTON 3: PAUSA
             BotonCam:
                 text: "II"
                 font_size: sp(22)
@@ -535,7 +557,6 @@ ScreenManager:
                 opacity: 1 if qrcam.is_recording else 0.3
                 on_release: qrcam.toggle_pause()
 
-            # BOTON 4: FINALIZAR (Salir)
             BotonCam:
                 text: "FIN"
                 color: color_black
@@ -602,14 +623,17 @@ class ProjectScreen(Screen):
         empresa = self.ids.empresa_input.text
         if empresa:
             app.current_company = empresa
-            
-            # --- RUTA SEGURA CORREGIDA ---
+            # Ruta para Android 10+ (Scoped Storage)
             if platform == 'android':
-                # Esto obtiene: /storage/emulated/0/Android/data/ar.com.cimahys/files/CimaCam_Datos
-                # Esta ruta SIEMPRE tiene permiso de escritura y es visible vía USB.
-                context = PythonActivity.mActivity
-                external_file_path = context.getExternalFilesDir(None).getAbsolutePath()
-                base = os.path.join(external_file_path, "CimaCam_Datos")
+                try:
+                    context = Context.getApplicationContext()
+                    external_file = context.getExternalFilesDir(None)
+                    if external_file:
+                        base = os.path.join(external_file.getAbsolutePath(), "CimaCam_Datos")
+                    else:
+                        base = "/sdcard/CimaCam_Datos"
+                except:
+                    base = "/sdcard/CimaCam_Datos"
             else:
                 base = os.path.join(os.getcwd(), "CimaCam_Datos")
             
@@ -632,9 +656,11 @@ class JobScreen(Screen):
             app.current_post = puesto
             folder = f"{app.current_measurement_type}_{puesto}_{datetime.now().strftime('%H%M')}"
             app.path_puesto = os.path.join(app.path_empresa, folder)
-            if not os.path.exists(app.path_puesto):
-                os.makedirs(app.path_puesto, exist_ok=True)
-            
+            try:
+                if not os.path.exists(app.path_puesto):
+                    os.makedirs(app.path_puesto, exist_ok=True)
+            except: pass
+
             cam = app.root.get_screen('camera').ids.qrcam
             cam.capture_count = 0 
             cam.is_recording = False
@@ -650,11 +676,10 @@ class ReviewScreen(Screen):
         app = App.get_running_app()
         m = app.current_measurement_type
         w = self.ids.notas_input
-        # Hints simplificados
-        if m == "ERGONOMIA": w.hint_text = "Carga (kg), Frecuencia, Posturas..."
-        elif m == "INCENDIOS": w.hint_text = "Matafuegos, Luces, Salidas..."
+        if m == "ERGONOMIA": w.hint_text = "Carga, Frecuencia, Posturas..."
+        elif m == "INCENDIOS": w.hint_text = "Matafuegos, Luces..."
         elif m == "RUIDO": w.hint_text = "dBA, Fuente..."
-        else: w.hint_text = "Observaciones generales..."
+        else: w.hint_text = "Observaciones..."
 
     def finalizar(self, guardar=True):
         app = App.get_running_app()
@@ -662,13 +687,15 @@ class ReviewScreen(Screen):
             txt = self.ids.notas_input.text
             if txt:
                 fname = f"{app.path_puesto}/Informe_{datetime.now().strftime('%H%M%S')}.txt"
-                with open(fname, "w", encoding="utf-8") as f:
-                    f.write(f"CLIENTE: {app.current_company}\n")
-                    f.write(f"TIPO: {app.current_measurement_type}\n")
-                    f.write(f"PUESTO: {app.current_post}\n")
-                    f.write(f"FECHA: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n")
-                    f.write("="*30 + "\n")
-                    f.write(txt)
+                try:
+                    with open(fname, "w", encoding="utf-8") as f:
+                        f.write(f"CLIENTE: {app.current_company}\n")
+                        f.write(f"TIPO: {app.current_measurement_type}\n")
+                        f.write(f"PUESTO: {app.current_post}\n")
+                        f.write(f"FECHA: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n")
+                        f.write(txt)
+                except Exception as e:
+                    print(f"Error txt: {e}")
         self.ids.notas_input.text = ""
         app.root.current = 'measurement'
 
@@ -679,17 +706,7 @@ class CimaCamApp(App):
     path_empresa = ""
     path_puesto = ""
     
-    # --- LOGICA DE GUIAS ---
-    # Nombres de las imágenes que debes subir. El string vacío '' es "sin guía".
-    # Lista ampliada de guías
-    guide_list = ListProperty([
-        'guia_frente.png',
-        'guia_perfil.png',
-        'guia_admin_perfil.png',
-        'guia_admin_frente.png',
-        'guia_levantamiento.png',
-        '' # El último vacío es para la opción "sin guía"
-    ])
+    guide_list = ListProperty(['guia_frente.png', 'guia_perfil.png', 'guia_admin_perfil.png', 'guia_admin_frente.png', 'guia_levantamiento.png', ''])
     current_guide_index = NumericProperty(0)
     current_guide_image = StringProperty('guia_frente.png')
 
@@ -699,47 +716,33 @@ class CimaCamApp(App):
 
     def build(self):
         Window.bind(on_keyboard=self.on_key)
-        if platform == 'android':
-            from android.permissions import request_permissions, Permission
-            request_permissions([
-                Permission.CAMERA,
-                Permission.RECORD_AUDIO,
-                Permission.WRITE_EXTERNAL_STORAGE,
-                Permission.READ_EXTERNAL_STORAGE
-            ])
         return Builder.load_string(KV)
 
+    def on_start(self):
+        if platform == 'android':
+            try:
+                from android.permissions import request_permissions, Permission
+                request_permissions([
+                    Permission.CAMERA,
+                    Permission.RECORD_AUDIO,
+                    Permission.WRITE_EXTERNAL_STORAGE,
+                    Permission.READ_EXTERNAL_STORAGE
+                ])
+            except: pass
+
     def on_key(self, window, key, *args):
-        # 27 es el código del botón 'Atrás' en Android
         if key == 27:
-            sm = self.root # Tu ScreenManager
-            current_screen = sm.current
-            
-            # Lógica de navegación: "Si estoy en X, vuelvo a Y"
-            if current_screen == 'welcome':
-                return False # Cierra la App
-            elif current_screen == 'project':
-                sm.current = 'welcome'
-                return True # Bloquea el cierre y vuelve atrás
-            elif current_screen == 'measurement':
-                sm.current = 'project'
-                return True
-            elif current_screen == 'job':
-                sm.current = 'measurement'
-                return True
-            elif current_screen == 'camera':
-                # Si estás en la cámara, intenta detenerla antes de salir
-                try:
-                    screen = sm.get_screen('camera')
-                    if hasattr(screen.ids, 'qrcam'):
-                        screen.ids.qrcam.stop_camera()
-                except:
-                    pass
+            sm = self.root
+            if sm.current == 'camera':
+                try: sm.get_screen('camera').ids.qrcam.stop_camera()
+                except: pass
                 sm.current = 'job'
                 return True
-            
-            return True # Por defecto no cerrar si no es 'welcome'
+            elif sm.current == 'welcome': return False
+            else:
+                sm.current = 'welcome'
+                return True
+            return True
 
 if __name__ == '__main__':
-
     CimaCamApp().run()
