@@ -5,12 +5,12 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v2
 
-      # 1. Liberar espacio (Igual que antes, muy importante)
+      # 1. Liberar espacio en disco (Android ocupa mucho)
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -22,24 +22,54 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      # 2. Instalar dependencias manualmente (La parte nueva y segura)
-      - name: Install dependencies
+      # 2. Instalar Java (Necesario para Android)
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 3. Instalar dependencias de Python y sistema
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev libffi-dev python3-dev
-          sudo apt-get install -y libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev portmidi
-          sudo apt-get install -y openjdk-17-jdk unzip autoconf libtool pkg-config zlib1g-dev
-          pip3 install --upgrade pip
-          pip3 install buildozer cython==0.29.36
+          sudo apt-get install -y \
+            python3-pip \
+            build-essential \
+            git \
+            python3 \
+            python3-dev \
+            ffmpeg \
+            libsdl2-dev \
+            libsdl2-image-dev \
+            libsdl2-mixer-dev \
+            libsdl2-ttf-dev \
+            libportmidi-dev \
+            libswscale-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            zlib1g-dev \
+            libssl-dev \
+            libffi-dev \
+            unzip \
+            autoconf \
+            libtool \
+            pkg-config
 
-      # 3. Ejecutar Buildozer
-      # Usamos 'yes |' para aceptar licencias automáticamente
+      # 4. Instalar Buildozer y Cython
+      - name: Install Buildozer
+        run: |
+          pip3 install --upgrade pip
+          pip3 install --user --upgrade buildozer
+          pip3 install --user --upgrade Cython==0.29.33 
+
+      # 5. Ejecutar Buildozer (Aceptando licencias automáticamente)
       - name: Build with Buildozer
         run: |
           export PATH=$PATH:~/.local/bin
           yes | buildozer android debug
 
-      # 4. Subir el APK
+      # 6. Subir el APK resultante
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
