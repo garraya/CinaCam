@@ -5,12 +5,12 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
 
     steps:
       - uses: actions/checkout@v2
 
-      # 1. Liberar espacio en disco (Android ocupa mucho)
+      # 1. Liberar espacio (Igual que antes, muy importante)
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -22,15 +22,24 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      # 2. Acción oficial de Buildozer
-      - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action-v1@v3
-        id: buildozer
-        with:
-          command: buildozer android debug
-          buildozer_version: master
+      # 2. Instalar dependencias manualmente (La parte nueva y segura)
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev libffi-dev python3-dev
+          sudo apt-get install -y libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev portmidi
+          sudo apt-get install -y openjdk-17-jdk unzip autoconf libtool pkg-config zlib1g-dev
+          pip3 install --upgrade pip
+          pip3 install buildozer cython==0.29.36
 
-      # 3. Subir el APK resultante para que lo descargues
+      # 3. Ejecutar Buildozer
+      # Usamos 'yes |' para aceptar licencias automáticamente
+      - name: Build with Buildozer
+        run: |
+          export PATH=$PATH:~/.local/bin
+          yes | buildozer android debug
+
+      # 4. Subir el APK
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
