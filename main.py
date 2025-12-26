@@ -24,7 +24,7 @@ from datetime import datetime
 if platform == 'android':
     from jnius import autoclass
     from android.permissions import request_permissions, Permission
-    Context = autoclass('android.content.Context')
+    # IMPORTANTE: Definimos esto global para usarlo correctamente
     PythonActivity = autoclass('org.kivy.android.PythonActivity')
 
 # --- CONFIGURACIÓN PARA PC ---
@@ -45,38 +45,28 @@ class KivyCamera(Image):
         self.fps = 30
 
     def start_camera(self):
-        # Liberar cámara previa si existe
         if self.capture:
             self.capture.release()
             self.capture = None
 
         found = False
         log_intentos = ""
-        
-        # Probamos índices del 0 al 4
         possible_indices = [0, 1, 2, 3, 4]
         
         for i in possible_indices:
             try:
                 temp_cap = cv2.VideoCapture(i)
-                
-                # --- SOLUCIÓN: NO FORZAMOS RESOLUCIÓN ---
-                # Comentamos estas líneas para evitar crashes en ciertos modelos
-                # temp_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                # temp_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                
+                # No forzamos resolución para evitar crashes
                 if temp_cap.isOpened():
-                    # Leer frame de prueba
                     ret, frame = temp_cap.read()
                     if ret and frame is not None:
                         self.capture = temp_cap
-                        self.error_message = "" # Limpiar error
+                        self.error_message = ""
                         Clock.schedule_interval(self.update, 1.0 / self.fps)
                         found = True
-                        print(f"Cámara iniciada en índice {i}")
                         break
                     else:
-                        log_intentos += f"Idx {i}: Abre sin imagen.\n"
+                        log_intentos += f"Idx {i}: Sin imagen.\n"
                         temp_cap.release()
                 else:
                     log_intentos += f"Idx {i}: No abre.\n"
@@ -84,7 +74,7 @@ class KivyCamera(Image):
                 log_intentos += f"Idx {i} Err: {str(e)}\n"
 
         if not found:
-            self.error_message = f"NO SE ENCONTRO CAMARA:\n{log_intentos}"
+            self.error_message = f"NO CAMARA: {log_intentos}"
 
     def stop_camera(self):
         Clock.unschedule(self.update)
@@ -100,13 +90,11 @@ class KivyCamera(Image):
                 if platform == 'android':
                     frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
-                # Grabar video limpio
                 if self.is_recording and not self.is_paused and self.video_writer:
                     self.video_writer.write(frame)
 
                 self.current_clean_frame = frame
 
-                # Mostrar en pantalla (escalado)
                 scale = 640 / frame.shape[0]
                 w = int(frame.shape[1] * scale)
                 h = int(frame.shape[0] * scale)
@@ -121,15 +109,12 @@ class KivyCamera(Image):
         if not hasattr(self, 'current_clean_frame') or self.current_clean_frame is None:
             self.error_message = "Error: Cámara no lista"
             return
-
         app = App.get_running_app()
         try:
             if not os.path.exists(app.path_puesto):
                 os.makedirs(app.path_puesto, exist_ok=True)
-                
             prefix = app.current_measurement_type[:3]
             filename = f"{app.path_puesto}/{prefix}_Foto_{datetime.now().strftime('%H%M%S')}.jpg"
-            
             cv2.imwrite(filename, self.current_clean_frame)
             self.capture_count += 1
             self.error_message = "FOTO OK"
@@ -140,29 +125,21 @@ class KivyCamera(Image):
         if self.capture is None:
             self.error_message = "Error: Sin Cámara"
             return
-
         app = App.get_running_app()
-        
         if not self.is_recording:
-            # INICIAR
             try:
                 if not os.path.exists(app.path_puesto):
                     os.makedirs(app.path_puesto, exist_ok=True)
-
                 prefix = app.current_measurement_type[:3]
                 filename = f"{app.path_puesto}/{prefix}_Video_{datetime.now().strftime('%H%M%S')}.mp4"
-                
                 w_cam = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
                 h_cam = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                
                 if platform == 'android':
                     w_video, h_video = h_cam, w_cam
                 else:
                     w_video, h_video = w_cam, h_cam
-
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 self.video_writer = cv2.VideoWriter(filename, fourcc, 30.0, (w_video, h_video))
-                
                 if self.video_writer.isOpened():
                     self.is_recording = True
                     self.is_paused = False
@@ -172,7 +149,6 @@ class KivyCamera(Image):
             except Exception as e:
                 self.error_message = f"Error Video: {e}"
         else:
-            # PARAR
             self.close_video_file()
 
     def toggle_pause(self):
@@ -297,7 +273,7 @@ ScreenManager:
             size_hint_y: 0.1
 
         Label:
-            text: "Gestión Inteligente"
+            text: "Gestión Inteligente v0.5"
             color: (0.6, 0.6, 0.6, 1)
             size_hint_y: 0.1
 
@@ -348,9 +324,8 @@ ScreenManager:
             text: "CREAR / SIGUIENTE"
             on_release: root.crear_proyecto()
         
-        # --- SECCION GESTION DE ARCHIVOS ---
         Label:
-            text: "Carpetas Existentes (Limpieza)"
+            text: "Historial de Carpetas"
             color: (0.5, 0.5, 0.5, 1)
             font_size: sp(14)
             size_hint_y: None
@@ -468,10 +443,9 @@ ScreenManager:
             opacity: 0.4 if app.current_guide_image else 0
             fit_mode: "contain"
 
-        # LABEL DEBUG ERROR
         Label:
             text: qrcam.error_message
-            color: color_red if "Err" in self.text or "NO SE" in self.text else color_gold
+            color: color_red if "NO" in self.text or "Err" in self.text else color_gold
             bold: True
             font_size: sp(14)
             size_hint_y: None
@@ -487,7 +461,6 @@ ScreenManager:
                     pos: self.pos
                     size: self.size
 
-        # INFO SUPERIOR
         BoxLayout:
             size_hint: (1, None)
             height: dp(60)
@@ -514,7 +487,6 @@ ScreenManager:
                 text_size: self.size
                 bold: True
 
-        # ESTADO GRABANDO
         Label:
             text: "● PAUSA" if (qrcam.is_recording and qrcam.is_paused) else ("● GRABANDO" if qrcam.is_recording else "")
             color: color_gold if qrcam.is_paused else color_red
@@ -533,7 +505,6 @@ ScreenManager:
             font_size: sp(12)
             on_release: app.cycle_guide()
 
-        # CONTROLES
         BoxLayout:
             size_hint: (1, None)
             height: dp(120)
@@ -633,70 +604,77 @@ class ProjectScreen(Screen):
         if empresa:
             app.current_company = empresa
             base = app.get_storage_path()
-            
-            app.path_empresa = os.path.join(base, empresa)
-            if not os.path.exists(app.path_empresa):
-                os.makedirs(app.path_empresa, exist_ok=True)
+            if base:
+                app.path_empresa = os.path.join(base, empresa)
+                if not os.path.exists(app.path_empresa):
+                    os.makedirs(app.path_empresa, exist_ok=True)
             app.root.current = 'measurement'
 
-    # --- NUEVO: GESTIÓN DE CARPETAS ---
     def cargar_carpetas(self):
-        app = App.get_running_app()
-        path = app.get_storage_path()
-        lista = self.ids.folder_list
-        lista.clear_widgets()
+        # PROTECCION CONTRA CRASH: Usamos try/except
+        try:
+            app = App.get_running_app()
+            path = app.get_storage_path()
+            lista = self.ids.folder_list
+            lista.clear_widgets()
 
-        if os.path.exists(path):
-            carpetas = [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
-            for c in carpetas:
-                btn = Button(
-                    text=c,
-                    size_hint_y=None, 
-                    height=50,
-                    background_color=(0.2, 0.2, 0.2, 1)
-                )
-                btn.bind(on_release=lambda x, nom=c: self.mostrar_opciones(nom))
-                lista.add_widget(btn)
+            if path and os.path.exists(path):
+                try:
+                    # Leemos carpetas
+                    carpetas = [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
+                    for c in carpetas:
+                        btn = Button(
+                            text=c,
+                            size_hint_y=None, 
+                            height=dp(50),
+                            background_color=(0.2, 0.2, 0.2, 1)
+                        )
+                        btn.bind(on_release=lambda x, nom=c: self.mostrar_opciones(nom))
+                        lista.add_widget(btn)
+                except Exception as e:
+                    # Si falla leer, mostramos error pero NO cerramos la app
+                    err_lbl = Label(text=f"Error leyendo carpetas: {str(e)}", color=(1,0,0,1), size_hint_y=None, height=dp(30))
+                    lista.add_widget(err_lbl)
+        except Exception as e_global:
+            print(f"Error fatal cargar_carpetas: {e_global}")
 
     def mostrar_opciones(self, nombre_carpeta):
-        app = App.get_running_app()
-        ruta = os.path.join(app.get_storage_path(), nombre_carpeta)
-        
-        # Listar archivos
-        contenido = ""
         try:
-            archs = os.listdir(ruta)
-            contenido = "\n".join(archs[:10]) # Mostrar solo los primeros 10
-            if len(archs) > 10: contenido += "\n..."
-        except: contenido = "Error leyendo carpeta"
-
-        layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
-        lbl = Label(text=f"Archivos en {nombre_carpeta}:\n\n{contenido}")
-        
-        btn_borrar = Button(
-            text="ELIMINAR CARPETA", 
-            background_color=(0.8, 0, 0, 1),
-            size_hint_y=None, height=50
-        )
-        btn_cerrar = Button(text="Cerrar", size_hint_y=None, height=50)
-
-        layout.add_widget(lbl)
-        layout.add_widget(btn_borrar)
-        layout.add_widget(btn_cerrar)
-
-        popup = Popup(title=nombre_carpeta, content=layout, size_hint=(0.9, 0.7))
-        
-        def eliminar(inst):
+            app = App.get_running_app()
+            ruta = os.path.join(app.get_storage_path(), nombre_carpeta)
+            
+            contenido = ""
             try:
-                shutil.rmtree(ruta)
-                popup.dismiss()
-                self.cargar_carpetas()
-            except Exception as e:
-                lbl.text = f"Error borrando: {e}"
+                archs = os.listdir(ruta)
+                contenido = "\n".join(archs[:10])
+                if len(archs) > 10: contenido += "\n..."
+            except: contenido = "Vacia o ilegible"
 
-        btn_borrar.bind(on_release=eliminar)
-        btn_cerrar.bind(on_release=popup.dismiss)
-        popup.open()
+            layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+            lbl = Label(text=f"{nombre_carpeta}\n\n{contenido}")
+            
+            btn_borrar = Button(text="ELIMINAR", background_color=(0.8, 0, 0, 1), size_hint_y=None, height=dp(50))
+            btn_cerrar = Button(text="Cerrar", size_hint_y=None, height=dp(50))
+
+            layout.add_widget(lbl)
+            layout.add_widget(btn_borrar)
+            layout.add_widget(btn_cerrar)
+
+            popup = Popup(title="Gestionar", content=layout, size_hint=(0.9, 0.7))
+            
+            def eliminar(inst):
+                try:
+                    shutil.rmtree(ruta)
+                    popup.dismiss()
+                    self.cargar_carpetas()
+                except Exception as e:
+                    lbl.text = f"Error borrando: {e}"
+
+            btn_borrar.bind(on_release=eliminar)
+            btn_cerrar.bind(on_release=popup.dismiss)
+            popup.open()
+        except Exception as e:
+            print(f"Error popup: {e}")
 
 class MeasurementScreen(Screen):
     def select_type(self, m_type):
@@ -710,8 +688,17 @@ class JobScreen(Screen):
         puesto = self.ids.puesto_input.text
         if puesto:
             app.current_post = puesto
+            
+            # Crear nombre carpeta
             folder = f"{app.current_measurement_type}_{puesto}_{datetime.now().strftime('%H%M')}"
-            app.path_puesto = os.path.join(app.path_empresa, folder)
+            
+            base = app.path_empresa
+            # Fallback si path_empresa esta vacio
+            if not base:
+                storage = app.get_storage_path()
+                base = os.path.join(storage, app.current_company) if storage else "/sdcard"
+
+            app.path_puesto = os.path.join(base, folder)
             try:
                 if not os.path.exists(app.path_puesto):
                     os.makedirs(app.path_puesto, exist_ok=True)
@@ -774,23 +761,24 @@ class CimaCamApp(App):
         Window.bind(on_keyboard=self.on_key)
         return Builder.load_string(KV)
 
-    # --- MÉTODO CENTRALIZADO DE ALMACENAMIENTO ---
+    # --- MÉTODO CORREGIDO DE ALMACENAMIENTO ---
     def get_storage_path(self):
         if platform == 'android':
             try:
-                context = Context.getApplicationContext()
+                # CORRECCIÓN CLAVE: Usamos la actividad, no la clase Context
+                context = PythonActivity.mActivity 
                 external_file = context.getExternalFilesDir(None)
                 if external_file:
                     return os.path.join(external_file.getAbsolutePath(), "CimaCam_Datos")
-            except: pass
+            except Exception as e:
+                print(f"Error get_storage_path: {e}")
             return "/sdcard/CimaCam_Datos"
         else:
             return os.path.join(os.getcwd(), "CimaCam_Datos")
 
     def on_start(self):
-        # Crear carpeta base si no existe
         base = self.get_storage_path()
-        if not os.path.exists(base):
+        if base and not os.path.exists(base):
             try: os.makedirs(base, exist_ok=True)
             except: pass
 
@@ -818,7 +806,6 @@ class CimaCamApp(App):
                 return True
             return True
 
-# --- BLOQUE ANTI-CRASH (GUARDA LOG EN ARCHIVO) ---
 if __name__ == '__main__':
     try:
         CimaCamApp().run()
@@ -827,6 +814,9 @@ if __name__ == '__main__':
         error_trace = traceback.format_exc()
         try:
             if platform == 'android':
+                # Re-definimos por si acaso crash ocurre antes de importar
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 context = PythonActivity.mActivity
                 external_file = context.getExternalFilesDir(None)
                 if external_file:
