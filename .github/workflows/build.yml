@@ -70,7 +70,7 @@ jobs:
             ~/.buildozer
             .buildozer
             ~/.gradle
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}-v2
 
       - name: Configure Gradle Memory
         run: |
