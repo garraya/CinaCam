@@ -43,6 +43,12 @@ jobs:
           echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
 
+      - name: Remove ANDROID_NDK_LATEST_HOME (CRITICAL)
+        run: |
+          echo "Removing ANDROID_NDK_LATEST_HOME"
+          echo "ANDROID_NDK_LATEST_HOME=" >> $GITHUB_ENV
+
+
       # 5. Verificación CRÍTICA del NDK activo
       - name: Check active Android NDK
         run: |
