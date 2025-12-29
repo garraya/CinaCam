@@ -29,6 +29,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK 25b
+        run: |
+          yes | sdkmanager --install "ndk;25.2.9519653"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
+
       # 3. Instalar dependencias de Python y sistema
       - name: Install System Dependencies
         run: |
@@ -55,12 +63,6 @@ jobs:
             autoconf \
             libtool \
             pkg-config
-
-      - name: Force NDK 25b
-        run: |
-          sdkmanager --install "ndk;25.2.9519653"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
-
 
       # 4. Instalar Buildozer y Cython
       - name: Install Buildozer
