@@ -5,11 +5,12 @@ package.domain = ar.com.cimahys
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 version = 0.4
+icon.filename = logo.png
 
 # REQUISITOS CLAVE:
 # 1. opencv-python-headless: Vital para que no busque ventana gráfica y falle.
 # 2. android: Para permisos.
-requirements = python3, kivy==2.3.0, opencv-python-headless, android, numpy
+requirements = python3, kivy==2.3.0, opencv, android, numpy, requests
 
 orientation = portrait
 fullscreen = 0
