@@ -349,7 +349,7 @@ ScreenManager:
             canvas.before:
                 PushMatrix
                 Rotate:
-                    angle: qrcam.cam_rotation
+                    angle: app.cam_rotation
                     origin: self.center
             canvas.after:
                 PopMatrix
@@ -740,6 +740,8 @@ class CimaCamApp(App):
     guide_list = ListProperty(['guia_frente.png', 'guia_perfil.png', 'guia_admin_perfil.png', 'guia_admin_frente.png', 'guia_levantamiento.png'])
     current_guide_index = NumericProperty(0)
     current_guide_image = StringProperty('')
+  
+    cam_rotation = NumericProperty(0)
 
     def cycle_guide(self):
         if self.current_measurement_type == "ERGONOMIA":
