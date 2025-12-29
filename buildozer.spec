@@ -7,16 +7,14 @@ source.include_exts = py,png,jpg,kv,atlas
 version = 0.3
 icon.filename = logo.png
 
-# ESTA ES LA CLAVE:
-# 1. Sin 'pillow' (innecesario y conflictivo).
-# 2. opencv-python-headless (sin interfaz gráfica).
-# 3. numpy==1.26.4 (OBLIGATORIO poner versión exacta sin 'v' para evitar el error unique.cpp).
-requirements = python3, kivy==2.3.0, camera4kivy, gestures4kivy, numpy
+python.version = 3.10
+
+requirements = python3, kivy==2.3.0, camera4kivy, gestures4kivy, numpy==1.26.4
 
 orientation = portrait
 fullscreen = 0
 android.permissions = CAMERA, RECORD_AUDIO, WRITE_EXTERNAL_STORAGE, READ_EXTERNAL_STORAGE
-android.api = 33
+android.api = 24
 android.minapi = 24
 android.ndk = 25b
 android.accept_sdk_license = True
