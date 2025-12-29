@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       # 1. Liberar espacio en disco (Android ocupa mucho)
       - name: Free Disk Space
@@ -60,14 +60,29 @@ jobs:
       - name: Install Buildozer
         run: |
           pip3 install --upgrade pip
-          pip3 install --user --upgrade buildozer
-          pip3 install --user --upgrade Cython==0.29.33 
+          pip3 install --user --no-cache-dir buildozer
+          pip3 install --user --no-cache-dir Cython==0.29.33
 
-      # 5. Ejecutar Buildozer (Aceptando licencias automáticamente)
+      - name: Cache Buildozer
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+            ~/.gradle
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+
+      - name: Configure Gradle Memory
+        run: |
+          mkdir -p ~/.gradle
+          echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g" >> ~/.gradle/gradle.properties
+
       - name: Build with Buildozer
+        timeout-minutes: 60
         run: |
           export PATH=$PATH:~/.local/bin
           yes | buildozer android debug
+
 
       # 6. Subir el APK resultante
       - name: Upload artifacts
