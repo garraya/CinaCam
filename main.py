@@ -13,6 +13,8 @@ from kivy.uix.popup import Popup
 from kivy.uix.label import Label
 from kivy.uix.boxlayout import BoxLayout
 
+# --- IMPORTACIONES VITALES PARA VIDEO Y ARCHIVOS ---
+from jnius import autoclass
 import os
 import time
 import csv
@@ -22,25 +24,18 @@ from datetime import datetime
 if platform not in ['android', 'ios']:
     Window.size = (400, 750)
 
-# --- CLASE CÁMARA NATIVA ---
+# --- CLASE CÁMARA NATIVA MEJORADA ---
 class KivyCamera(Camera):
     is_recording = BooleanProperty(False)
     is_paused = BooleanProperty(False)
     capture_count = NumericProperty(0)
-    status_info = StringProperty("Cámara lista")
-    cam_rotation = NumericProperty(0)
+    status_info = StringProperty("Cámara lista") 
     
     def __init__(self, **kwargs):
-        # keep_ratio=False hace que la imagen se estire para llenar la pantalla (quita bordes negros)
+        # Resolución HD para la vista previa
         super(KivyCamera, self).__init__(resolution=(1280, 720), index=0, play=False, **kwargs)
         self.allow_stretch = True
         self.keep_ratio = False 
-
-	# LÓGICA DE ROTACIÓN (AGREGAR ESTO):
-        if platform == 'android':
-            self.cam_rotation = -270 # Probamos este ángulo para Android
-        else:
-            self.cam_rotation = 0    # En PC se queda en 0
 
     def start_camera(self):
         self.play = True
@@ -50,6 +45,25 @@ class KivyCamera(Camera):
         self.play = False
         self.status_info = "Cámara Pausada"
 
+    # --- FUNCIÓN DE ZOOM (Cambio de Lentes) ---
+    def cambiar_lente(self, tipo):
+        self.play = False
+        if tipo == '1x':
+            self.index = 0
+            self.status_info = "Lente: Principal"
+        elif tipo == '0.5x':
+            self.index = 2 # Suele ser gran angular en muchos Android
+            self.status_info = "Lente: Gran Angular"
+        Clock.schedule_once(lambda dt: self.reactivar(), 0.5)
+
+    def reactivar(self):
+        try:
+            self.play = True
+        except:
+            self.index = 0
+            self.play = True
+
+    # --- FOTOS ---
     def take_photo(self, es_extintor=False):
         app = App.get_running_app()
         try:
@@ -61,7 +75,6 @@ class KivyCamera(Camera):
             timestamp = datetime.now().strftime('%H%M%S')
             filename = f"{save_dir}/{prefix}_Foto_{timestamp}.png"
             
-            # Exportar visualización actual a PNG
             self.export_to_png(filename)
             
             self.capture_count += 1
@@ -71,25 +84,58 @@ class KivyCamera(Camera):
             self.status_info = "¡FOTO GUARDADA!"
             Clock.schedule_once(lambda dt: setattr(self, 'status_info', ''), 2)
             
-            # Notificar ruta al usuario (temporal para debug)
-            # app.mostrar_aviso("Foto Guardada", f"En: Download/CimaCam_Datos/...")
-
             if es_extintor:
                 app.root.get_screen('extinguisher_form').cargar_imagen(filename)
                 app.root.current = 'extinguisher_form'
                 
         except Exception as e:
             self.status_info = f"Error: {str(e)}"
-            app.mostrar_aviso("Error Foto", str(e))
 
+    # --- VIDEO NATIVO CON GUARDADO EN CARPETA CORRECTA ---
     def toggle_record_stop(self):
-        if not self.is_recording:
-            self.is_recording = True
-            self.status_info = "Grabando (Simulado)..."
+        if platform == 'android':
+            try:
+                # 1. Preparar clases de Java
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                Intent = autoclass('android.content.Intent')
+                MediaStore = autoclass('android.provider.MediaStore')
+                Uri = autoclass('android.net.Uri')
+                File = autoclass('java.io.File')
+                StrictMode = autoclass('android.os.StrictMode')
+
+                # 2. BYPASS DE SEGURIDAD (CRÍTICO PARA GUARDAR EL VIDEO)
+                # Esto permite que la cámara guarde el archivo directamente en nuestra carpeta
+                builder = StrictMode.VmPolicy.Builder()
+                StrictMode.setVmPolicy(builder.build())
+
+                # 3. Definir ruta exacta
+                app = App.get_running_app()
+                save_dir = app.path_puesto
+                if not os.path.exists(save_dir):
+                    os.makedirs(save_dir, exist_ok=True)
+                
+                prefix = app.current_measurement_type[:3]
+                filename = f"{prefix}_Video_{datetime.now().strftime('%H%M%S')}.mp4"
+                file_path = os.path.join(save_dir, filename)
+                
+                # 4. Crear URI y lanzar Intent
+                video_file = File(file_path)
+                video_uri = Uri.fromFile(video_file)
+
+                intent = Intent(MediaStore.ACTION_VIDEO_CAPTURE)
+                intent.putExtra(MediaStore.EXTRA_OUTPUT, video_uri) # Aquí le decimos dónde guardar
+                intent.putExtra(MediaStore.EXTRA_VIDEO_QUALITY, 1)  # Calidad Máxima (HD/4K)
+
+                current_activity = PythonActivity.mActivity
+                current_activity.startActivity(intent)
+                
+                self.status_info = f"Video guardado: {filename}"
+                
+            except Exception as e:
+                self.status_info = f"Error Video: {str(e)}"
+                print(f"Error Video: {e}")
         else:
-            self.is_recording = False
-            self.status_info = "Video finalizado"
-            self.capture_count += 1
+            self.status_info = "Video no disponible en PC"
 
     def toggle_pause(self):
         if self.is_recording:
@@ -343,7 +389,7 @@ ScreenManager:
     name: 'camera'
     on_pre_enter: root.setup_guides()
     FloatLayout:
-        # CONTENEDOR ROTADO: Soluciona el problema de la imagen girada
+        # CONTENEDOR ROTADO: Ajustado a 90 grados
         RelativeLayout:
             size_hint: (1, 1)
             canvas.before:
@@ -400,19 +446,38 @@ ScreenManager:
                 text_size: self.size
                 bold: True
 
-        # Boton Guia
+        # BOTONES LATERALES DE ZOOM
+        BoxLayout:
+            orientation: 'vertical'
+            size_hint: (None, None)
+            width: dp(60)
+            height: dp(150)
+            pos_hint: {'right': 0.98, 'center_y': 0.6}
+            spacing: dp(10)
+
+            BotonCam:
+                text: "1x"
+                background_color: (0, 0, 0, 0.5)
+                on_release: qrcam.cambiar_lente('1x')
+            
+            BotonCam:
+                text: "0.5x"
+                background_color: (0, 0, 0, 0.5)
+                on_release: qrcam.cambiar_lente('0.5x')
+
+        # Botón Guía
         BotonCam:
             text: "GUÍA"
             size_hint: (None, None)
             size: (dp(60), dp(60))
-            pos_hint: {'right': 0.98, 'center_y': 0.5}
+            pos_hint: {'right': 0.98, 'center_y': 0.4}
             background_color: (0, 0, 0, 0.6)
             color: color_gold
             opacity: 1 if app.current_measurement_type == "ERGONOMIA" else 0
             disabled: True if app.current_measurement_type != "ERGONOMIA" else False
             on_release: app.cycle_guide()
 
-        # Botón Especial EXTINTOR (SOLO MODO INCENDIO)
+        # Botón Especial EXTINTOR
         Button:
             text: "CARGAR\\nEXTINTOR"
             size_hint: (None, None)
@@ -447,17 +512,15 @@ ScreenManager:
                     pos: self.pos
                     size: self.size
             
-            # Botón Foto (Para fotos generales)
             BotonCam:
                 text: "FOTO"
                 background_color: (0.3, 0.3, 0.3, 1)
                 on_release: qrcam.take_photo(es_extintor=False)
 
-            # Botones con TEXTO en vez de símbolos
             BotonCam:
-                text: "STOP" if qrcam.is_recording else "GRABAR"
+                text: "GRABAR"
                 font_size: sp(14)
-                background_color: color_red if qrcam.is_recording else color_green
+                background_color: color_green
                 on_release: qrcam.toggle_record_stop()
             
             BotonCam:
@@ -612,10 +675,9 @@ class ProjectScreen(Screen):
         if empresa:
             app.current_company = empresa
             if platform == 'android':
-                # --- SOLUCIÓN: GUARDAR EN LA CARPETA DOWNLOADS (VISIBLE) ---
+                # GUARDA EN DESCARGAS
                 from android.storage import primary_external_storage_path
                 base_dir = primary_external_storage_path()
-                # Ruta: /storage/emulated/0/Download/CimaCam_Datos
                 app.path_empresa = os.path.join(base_dir, "Download", "CimaCam_Datos", empresa)
             else:
                 base_dir = os.getcwd()
@@ -624,8 +686,7 @@ class ProjectScreen(Screen):
             if not os.path.exists(app.path_empresa):
                 os.makedirs(app.path_empresa, exist_ok=True)
                 
-            # Aviso para el usuario
-            app.mostrar_aviso("Carpeta Creada", f"Los datos se guardarán en:\nDescargas/CimaCam_Datos/{empresa}")
+            app.mostrar_aviso("Carpeta Creada", f"Ruta: {app.path_empresa}")
             app.root.current = 'measurement'
 
 class MeasurementScreen(Screen):
@@ -694,7 +755,7 @@ class ExtinguisherFormScreen(Screen):
                 writer = csv.writer(f, delimiter=';')
                 if es_nuevo: writer.writerow(encabezados)
                 writer.writerow(datos)
-            app.mostrar_aviso("Guardado", f"Datos guardados en el CSV")
+            app.mostrar_aviso("Guardado", f"Datos en:\n{csv_file}")
         except Exception as e:
             print(f"Error CSV: {e}")
             app.mostrar_aviso("Error", str(e))
@@ -726,7 +787,7 @@ class ReviewScreen(Screen):
                     f.write(f"FECHA: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n")
                     f.write("="*30 + "\n")
                     f.write(txt)
-                app.mostrar_aviso("Informe Guardado", "Relevamiento finalizado con éxito.")
+                app.mostrar_aviso("Informe Guardado", f"Archivo:\n{fname}")
         self.ids.notas_input.text = ""
         app.root.current = 'measurement'
 
@@ -740,8 +801,9 @@ class CimaCamApp(App):
     guide_list = ListProperty(['guia_frente.png', 'guia_perfil.png', 'guia_admin_perfil.png', 'guia_admin_frente.png', 'guia_levantamiento.png'])
     current_guide_index = NumericProperty(0)
     current_guide_image = StringProperty('')
-  
-    cam_rotation = NumericProperty(0)
+    
+    # --- VARIABLE DE ROTACIÓN ---
+    cam_rotation = NumericProperty(0) 
 
     def cycle_guide(self):
         if self.current_measurement_type == "ERGONOMIA":
@@ -750,7 +812,7 @@ class CimaCamApp(App):
 
     def mostrar_aviso(self, titulo, mensaje):
         content = BoxLayout(orientation='vertical', padding=10)
-        content.add_widget(Label(text=mensaje))
+        content.add_widget(Label(text=mensaje, font_size='14sp', halign='center'))
         btn = Factory.BotonECAM(text="OK", size_hint=(1, 0.3))
         content.add_widget(btn)
         popup = Popup(title=titulo, content=content, size_hint=(0.8, 0.4))
@@ -759,6 +821,13 @@ class CimaCamApp(App):
 
     def build(self):
         Window.bind(on_keyboard=self.on_key)
+        
+        # --- ROTACIÓN AJUSTADA A 90 GRADOS ---
+        if platform == 'android':
+            self.cam_rotation = 90
+        else:
+            self.cam_rotation = 0
+
         if platform == 'android':
             from android.permissions import request_permissions, Permission
             request_permissions([
