@@ -111,6 +111,11 @@ jobs:
           mkdir -p ~/.gradle
           echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g" >> ~/.gradle/gradle.properties
 
+      - name: Clean Buildozer cache
+        run: |
+          rm -rf ~/.buildozer
+          rm -rf .buildozer
+
       # 10. Build FINAL (NDK forzado)
       - name: Build with Buildozer
         timeout-minutes: 60
