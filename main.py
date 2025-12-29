@@ -1,10 +1,9 @@
 from kivy.app import App
 from kivy.lang import Builder
 from kivy.uix.screenmanager import ScreenManager, Screen
-from kivy.uix.camera import Camera # USAMOS LA CÁMARA NATIVA
+from kivy.uix.camera import Camera 
 from kivy.uix.image import Image
 from kivy.clock import Clock
-from kivy.graphics.texture import Texture
 from kivy.utils import platform
 from kivy.core.window import Window
 from kivy.properties import StringProperty, NumericProperty, BooleanProperty, ListProperty
@@ -16,94 +15,87 @@ from kivy.uix.boxlayout import BoxLayout
 
 import os
 import time
+import csv
 from datetime import datetime
-
-# Importamos CV2 con protección para evitar cierres si la librería falla
-try:
-    import cv2
-    import numpy as np
-except ImportError:
-    print("Advertencia: OpenCV no se pudo cargar correctamente")
-    cv2 = None
 
 # --- CONFIGURACIÓN PARA PC ---
 if platform not in ['android', 'ios']:
     Window.size = (400, 750)
 
-# --- CLASE CÁMARA HÍBRIDA (NATIVA + FUNCIONES) ---
-# Cambiamos herencia de Image a Camera para usar el driver nativo de Android
+# --- CLASE CÁMARA NATIVA ---
 class KivyCamera(Camera):
     is_recording = BooleanProperty(False)
     is_paused = BooleanProperty(False)
     capture_count = NumericProperty(0)
-    status_info = StringProperty("Cámara lista") 
+    status_info = StringProperty("Cámara lista")
+    cam_rotation = NumericProperty(0)
     
     def __init__(self, **kwargs):
-        # Configuración nativa: resolución media para velocidad, índice 0 (trasera)
-        super(KivyCamera, self).__init__(resolution=(640, 480), index=0, play=False, **kwargs)
+        # keep_ratio=False hace que la imagen se estire para llenar la pantalla (quita bordes negros)
+        super(KivyCamera, self).__init__(resolution=(1280, 720), index=0, play=False, **kwargs)
         self.allow_stretch = True
-        self.keep_ratio = False
+        self.keep_ratio = False 
+
+	# LÓGICA DE ROTACIÓN (AGREGAR ESTO):
+        if platform == 'android':
+            self.cam_rotation = -270 # Probamos este ángulo para Android
+        else:
+            self.cam_rotation = 0    # En PC se queda en 0
 
     def start_camera(self):
-        # En cámara nativa, solo activamos 'play'
         self.play = True
-        self.status_info = "Cámara Activa"
+        self.status_info = ""
 
     def stop_camera(self):
         self.play = False
         self.status_info = "Cámara Pausada"
 
-    def take_photo(self):
+    def take_photo(self, es_extintor=False):
         app = App.get_running_app()
         try:
-            # 1. Definir ruta segura
             save_dir = app.path_puesto
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir, exist_ok=True)
-                
-            prefix = app.current_measurement_type[:3]
+            
+            prefix = "EXT" if es_extintor else app.current_measurement_type[:3]
             timestamp = datetime.now().strftime('%H%M%S')
-            # Nota: La cámara nativa exporta mejor en PNG
             filename = f"{save_dir}/{prefix}_Foto_{timestamp}.png"
             
-            # 2. Guardar lo que se ve en pantalla (NATIVO DE KIVY)
-            # Esto evita el error de "frame vacío" de OpenCV
+            # Exportar visualización actual a PNG
             self.export_to_png(filename)
             
             self.capture_count += 1
             app.temp_photo_path = filename
             print(f"Foto guardada: {filename}")
-            self.status_info = "¡FOTO GUARDADA!"
             
-            # Borrar mensaje a los 2 seg
+            self.status_info = "¡FOTO GUARDADA!"
             Clock.schedule_once(lambda dt: setattr(self, 'status_info', ''), 2)
             
-            # 3. Lógica específica de Incendios
-            if app.current_measurement_type == "INCENDIOS":
+            # Notificar ruta al usuario (temporal para debug)
+            # app.mostrar_aviso("Foto Guardada", f"En: Download/CimaCam_Datos/...")
+
+            if es_extintor:
                 app.root.get_screen('extinguisher_form').cargar_imagen(filename)
                 app.root.current = 'extinguisher_form'
                 
         except Exception as e:
-            self.status_info = f"Error Foto: {str(e)}"
-            print(f"Error saving photo: {e}")
+            self.status_info = f"Error: {str(e)}"
+            app.mostrar_aviso("Error Foto", str(e))
 
-    # --- FUNCIONES DE VIDEO (ADAPTADAS) ---
-    # La grabación de video nativa es compleja, por ahora dejamos los botones
-    # funcionando visualmente para no romper tu diseño, pero avisamos.
     def toggle_record_stop(self):
         if not self.is_recording:
             self.is_recording = True
-            self.status_info = "Grabación simulada (WIP)"
+            self.status_info = "Grabando (Simulado)..."
         else:
             self.is_recording = False
-            self.status_info = "Video guardado"
+            self.status_info = "Video finalizado"
             self.capture_count += 1
 
     def toggle_pause(self):
         if self.is_recording:
             self.is_paused = not self.is_paused
             if self.is_paused:
-                self.play = False # Congela la imagen visualmente
+                self.play = False 
             else:
                 self.play = True
 
@@ -114,7 +106,7 @@ class KivyCamera(Camera):
 
 Factory.register('KivyCamera', cls=KivyCamera)
 
-# --- DISEÑO KV (MANTENIDO EXACTAMENTE IGUAL) ---
+# --- DISEÑO KV ---
 KV = '''
 #:import dp kivy.metrics.dp
 #:import sp kivy.metrics.sp
@@ -169,7 +161,7 @@ KV = '''
     background_normal: '' 
     background_color: (0.2, 0.2, 0.2, 1)
     color: color_white
-    font_size: sp(14)
+    font_size: sp(13)
     bold: True
     size_hint: (None, None)
     size: (dp(65), dp(65))
@@ -351,13 +343,22 @@ ScreenManager:
     name: 'camera'
     on_pre_enter: root.setup_guides()
     FloatLayout:
-        # AQUÍ USAMOS EL WIDGET NATIVO
-        KivyCamera:
-            id: qrcam
+        # CONTENEDOR ROTADO: Soluciona el problema de la imagen girada
+        RelativeLayout:
             size_hint: (1, 1)
-            fit_mode: "cover"
+            canvas.before:
+                PushMatrix
+                Rotate:
+                    angle: qrcam.cam_rotation
+                    origin: self.center
+            canvas.after:
+                PopMatrix
+            
+            KivyCamera:
+                id: qrcam
+                size_hint: (1, 1)
         
-        # MENSAJE DE DIAGNÓSTICO EN ROJO
+        # Mensajes
         Label:
             text: qrcam.status_info
             color: color_red
@@ -373,6 +374,8 @@ ScreenManager:
             allow_stretch: True
             opacity: 0.4 if app.current_guide_image else 0
             fit_mode: "contain"
+
+        # Info Superior
         BoxLayout:
             size_hint: (1, None)
             height: dp(60)
@@ -396,13 +399,8 @@ ScreenManager:
                 halign: 'right'
                 text_size: self.size
                 bold: True
-        Label:
-            text: "● PAUSA" if (qrcam.is_recording and qrcam.is_paused) else ("● GRABANDO" if qrcam.is_recording else "")
-            color: color_gold if qrcam.is_paused else color_red
-            font_size: sp(24)
-            bold: True
-            pos_hint: {'center_x': 0.5, 'center_y': 0.85}
-            opacity: 1 if qrcam.is_recording else 0
+
+        # Boton Guia
         BotonCam:
             text: "GUÍA"
             size_hint: (None, None)
@@ -413,6 +411,29 @@ ScreenManager:
             opacity: 1 if app.current_measurement_type == "ERGONOMIA" else 0
             disabled: True if app.current_measurement_type != "ERGONOMIA" else False
             on_release: app.cycle_guide()
+
+        # Botón Especial EXTINTOR (SOLO MODO INCENDIO)
+        Button:
+            text: "CARGAR\\nEXTINTOR"
+            size_hint: (None, None)
+            size: (dp(90), dp(90))
+            pos_hint: {'right': 0.95, 'bottom': 0.2}
+            background_color: (0.8, 0.1, 0.1, 1)
+            bold: True
+            font_size: sp(12)
+            halign: 'center'
+            opacity: 1 if app.current_measurement_type == "INCENDIOS" else 0
+            disabled: True if app.current_measurement_type != "INCENDIOS" else False
+            on_release: qrcam.take_photo(es_extintor=True)
+            canvas.before:
+                Color:
+                    rgba: (0.8, 0.1, 0.1, 1)
+                RoundedRectangle:
+                    pos: self.pos
+                    size: self.size
+                    radius: [dp(45)]
+
+        # Barra Inferior
         BoxLayout:
             size_hint: (1, None)
             height: dp(120)
@@ -425,24 +446,30 @@ ScreenManager:
                 Rectangle:
                     pos: self.pos
                     size: self.size
+            
+            # Botón Foto (Para fotos generales)
             BotonCam:
                 text: "FOTO"
                 background_color: (0.3, 0.3, 0.3, 1)
-                on_release: qrcam.take_photo()
+                on_release: qrcam.take_photo(es_extintor=False)
+
+            # Botones con TEXTO en vez de símbolos
             BotonCam:
-                text: "■" if qrcam.is_recording else "▶"
-                font_size: sp(30)
+                text: "STOP" if qrcam.is_recording else "GRABAR"
+                font_size: sp(14)
                 background_color: color_red if qrcam.is_recording else color_green
                 on_release: qrcam.toggle_record_stop()
+            
             BotonCam:
-                text: "II"
-                font_size: sp(22)
+                text: "PAUSA"
+                font_size: sp(14)
                 background_color: color_gold
                 disabled: not qrcam.is_recording
                 opacity: 1 if qrcam.is_recording else 0.3
                 on_release: qrcam.toggle_pause()
+            
             BotonCam:
-                text: "FIN"
+                text: "SALIR"
                 color: color_black
                 background_color: color_gold
                 on_release: qrcam.exit_screen()
@@ -585,14 +612,20 @@ class ProjectScreen(Screen):
         if empresa:
             app.current_company = empresa
             if platform == 'android':
-                # Almacenamiento seguro para Android 11/12/13+
-                base = app.user_data_dir
+                # --- SOLUCIÓN: GUARDAR EN LA CARPETA DOWNLOADS (VISIBLE) ---
+                from android.storage import primary_external_storage_path
+                base_dir = primary_external_storage_path()
+                # Ruta: /storage/emulated/0/Download/CimaCam_Datos
+                app.path_empresa = os.path.join(base_dir, "Download", "CimaCam_Datos", empresa)
             else:
-                base = os.path.join(os.getcwd(), "CimaCam_Datos")
+                base_dir = os.getcwd()
+                app.path_empresa = os.path.join(base_dir, "CimaCam_Datos", empresa)
             
-            app.path_empresa = os.path.join(base, "Datos", empresa)
             if not os.path.exists(app.path_empresa):
                 os.makedirs(app.path_empresa, exist_ok=True)
+                
+            # Aviso para el usuario
+            app.mostrar_aviso("Carpeta Creada", f"Los datos se guardarán en:\nDescargas/CimaCam_Datos/{empresa}")
             app.root.current = 'measurement'
 
 class MeasurementScreen(Screen):
@@ -612,7 +645,6 @@ class JobScreen(Screen):
             if not os.path.exists(app.path_puesto):
                 os.makedirs(app.path_puesto, exist_ok=True)
             
-            # Inicializar cámara
             cam = app.root.get_screen('camera').ids.qrcam
             cam.start_camera()
             app.root.current = 'camera'
@@ -628,7 +660,6 @@ class CameraScreen(Screen):
 class ExtinguisherFormScreen(Screen):
     def cargar_imagen(self, path):
         self.ids.img_preview.source = path
-        # Limpiar campos
         self.ids.ext_marca.text = ""
         self.ids.ext_tipo.text = ""
         self.ids.ext_capacidad.text = ""
@@ -663,8 +694,10 @@ class ExtinguisherFormScreen(Screen):
                 writer = csv.writer(f, delimiter=';')
                 if es_nuevo: writer.writerow(encabezados)
                 writer.writerow(datos)
+            app.mostrar_aviso("Guardado", f"Datos guardados en el CSV")
         except Exception as e:
             print(f"Error CSV: {e}")
+            app.mostrar_aviso("Error", str(e))
         app.root.current = 'camera'
 
 class ReviewScreen(Screen):
@@ -693,6 +726,7 @@ class ReviewScreen(Screen):
                     f.write(f"FECHA: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n")
                     f.write("="*30 + "\n")
                     f.write(txt)
+                app.mostrar_aviso("Informe Guardado", "Relevamiento finalizado con éxito.")
         self.ids.notas_input.text = ""
         app.root.current = 'measurement'
 
@@ -711,6 +745,15 @@ class CimaCamApp(App):
         if self.current_measurement_type == "ERGONOMIA":
             self.current_guide_index = (self.current_guide_index + 1) % len(self.guide_list)
             self.current_guide_image = self.guide_list[self.current_guide_index]
+
+    def mostrar_aviso(self, titulo, mensaje):
+        content = BoxLayout(orientation='vertical', padding=10)
+        content.add_widget(Label(text=mensaje))
+        btn = Factory.BotonECAM(text="OK", size_hint=(1, 0.3))
+        content.add_widget(btn)
+        popup = Popup(title=titulo, content=content, size_hint=(0.8, 0.4))
+        btn.bind(on_release=popup.dismiss)
+        popup.open()
 
     def build(self):
         Window.bind(on_keyboard=self.on_key)
