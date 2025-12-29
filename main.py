@@ -6,11 +6,12 @@ from kivy.clock import Clock
 from kivy.graphics.texture import Texture
 from kivy.utils import platform
 from kivy.core.window import Window
-from kivy.properties import StringProperty, NumericProperty, BooleanProperty, ListProperty, ObjectProperty
+from kivy.properties import StringProperty, NumericProperty, BooleanProperty, ListProperty
 from kivy.metrics import dp, sp
 from kivy.factory import Factory 
 from kivy.uix.popup import Popup
 from kivy.uix.label import Label
+from kivy.uix.boxlayout import BoxLayout
 
 import cv2
 import numpy as np
@@ -22,33 +23,43 @@ from datetime import datetime
 if platform not in ['android', 'ios']:
     Window.size = (400, 750)
 
-# --- CLASE CÁMARA MEJORADA ---
+# --- CLASE CÁMARA ROBUSTA ---
 class KivyCamera(Image):
     is_recording = BooleanProperty(False)
     is_paused = BooleanProperty(False)
     video_writer = None
     capture_count = NumericProperty(0)
+    # Variable para mostrar mensajes de error en la propia pantalla
+    status_message = StringProperty("Inicializando...") 
     
     def __init__(self, **kwargs):
         super(KivyCamera, self).__init__(**kwargs)
         self.capture = None
         self.fps = 30
-        self.last_photo_path = "" # Para guardar la ruta de la última foto
+        self.last_photo_path = "" 
 
     def start_camera(self):
-        # Intentar liberar primero si existía
+        self.status_message = "Buscando cámara..."
         if self.capture:
             self.capture.release()
             
-        # Índice 0 suele ser back camera en Android, pero varía.
-        self.capture = cv2.VideoCapture(0)
+        # Intentar conectar con la cámara
+        # Probamos índice 0 (trasera habitualmente) y 1 (frontal)
+        camera_idx = 0
+        self.capture = cv2.VideoCapture(camera_idx)
         
-        # Verificación de seguridad
+        # Si falla la 0, probamos la 1
         if not self.capture.isOpened():
-            print("Error: No se pudo abrir la cámara 0, intentando con 1")
+            self.status_message = "Cámara 0 falló, probando 1..."
+            print("Cámara 0 no abre, probando 1")
+            self.capture.release()
             self.capture = cv2.VideoCapture(1)
 
-        Clock.schedule_interval(self.update, 1.0 / self.fps)
+        if self.capture.isOpened():
+            self.status_message = "" # Borrar mensaje si conecta
+            Clock.schedule_interval(self.update, 1.0 / self.fps)
+        else:
+            self.status_message = "ERROR: No se pudo abrir ninguna cámara."
 
     def stop_camera(self):
         Clock.unschedule(self.update)
@@ -61,93 +72,90 @@ class KivyCamera(Image):
         if self.capture:
             ret, frame = self.capture.read()
             if ret:
-                # Rotación para Android (portrait)
+                # Si recibimos imagen, borramos cualquier error
+                if self.status_message != "": 
+                    self.status_message = ""
+
                 if platform == 'android':
-                    # Dependiendo del dispositivo, puede ser 90 o -90 (270)
                     frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
-                # GRABAR
                 if self.is_recording and not self.is_paused and self.video_writer:
                     self.video_writer.write(frame)
 
-                # Guardamos frame limpio en memoria para fotos
                 self.current_clean_frame = frame
 
-                # Redimensionar para mostrar en pantalla (ahorra recursos)
-                scale_percent = 640 / frame.shape[0] # Mantener altura 640px aprox
+                # Optimización de renderizado
+                scale_percent = 640 / frame.shape[0]
                 width = int(frame.shape[1] * scale_percent)
                 height = int(frame.shape[0] * scale_percent)
                 
-                # Evitar error de dimensión 0
                 if width > 0 and height > 0:
                     frame_resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
-                    
-                    # Convertir a textura Kivy
-                    # cv2 es BGR, Kivy prefiere RGB, pero colorfmt='bgr' lo maneja
                     buf = cv2.flip(frame_resized, 0).tobytes()
                     texture = Texture.create(size=(frame_resized.shape[1], frame_resized.shape[0]), colorfmt='bgr')
                     texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
                     self.texture = texture
-
-    # --- LÓGICA DE FOTO Y VIDEO ---
+            else:
+                # La cámara está abierta pero manda cuadros vacíos
+                self.status_message = "Cámara conectada pero sin imagen."
 
     def take_photo(self):
         app = App.get_running_app()
         if hasattr(self, 'current_clean_frame'):
             try:
-                if not os.path.exists(app.path_puesto):
-                    os.makedirs(app.path_puesto, exist_ok=True)
+                # --- CORRECCIÓN CRÍTICA DE RUTA ---
+                # Usamos una ruta donde la app SIEMPRE tiene permiso de escribir
+                save_dir = app.path_puesto
+                if not os.path.exists(save_dir):
+                    os.makedirs(save_dir, exist_ok=True)
                     
                 prefix = app.current_measurement_type[:3]
                 timestamp = datetime.now().strftime('%H%M%S')
-                filename = f"{app.path_puesto}/{prefix}_Foto_{timestamp}.jpg"
+                filename = f"{save_dir}/{prefix}_Foto_{timestamp}.jpg"
                 
-                # Guardar imagen
                 cv2.imwrite(filename, self.current_clean_frame)
                 self.capture_count += 1
                 self.last_photo_path = filename
                 print(f"Foto guardada: {filename}")
                 
-                # --- LÓGICA ESPECIAL: INCENDIOS ---
+                # Feedback visual temporal
+                self.status_message = f"¡Foto Guardada!"
+                Clock.schedule_once(lambda dt: self.limpiar_mensaje(), 2)
+                
                 if app.current_measurement_type == "INCENDIOS":
-                    # Pausar cámara e ir al formulario de carga de datos
-                    app.temp_photo_path = filename # Guardar ref global
+                    app.temp_photo_path = filename 
                     app.root.get_screen('extinguisher_form').cargar_imagen(filename)
                     app.root.current = 'extinguisher_form'
                     
             except Exception as e:
-                print(f"Error al guardar foto: {e}")
+                self.status_message = f"Error al guardar: {str(e)}"
+                print(f"Error save: {e}")
+
+    def limpiar_mensaje(self):
+        self.status_message = ""
 
     def toggle_record_stop(self):
         app = App.get_running_app()
-        
-        # En modo incendio o foto-céntrico, tal vez queramos bloquear video, 
-        # pero lo dejamos habilitado por si acaso.
-        
         if not self.is_recording:
-            # INICIAR
             try:
-                if not os.path.exists(app.path_puesto):
-                    os.makedirs(app.path_puesto, exist_ok=True)
+                save_dir = app.path_puesto
+                if not os.path.exists(save_dir):
+                    os.makedirs(save_dir, exist_ok=True)
 
                 prefix = app.current_measurement_type[:3]
-                filename = f"{app.path_puesto}/{prefix}_Video_{datetime.now().strftime('%H%M%S')}.mp4"
+                filename = f"{save_dir}/{prefix}_Video_{datetime.now().strftime('%H%M%S')}.mp4"
                 
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                
-                if platform == 'android':
-                    width, height = height, width
+                if platform == 'android': width, height = height, width
 
                 self.video_writer = cv2.VideoWriter(filename, fourcc, 20.0, (width, height))
-                
                 self.is_recording = True
                 self.is_paused = False
             except Exception as e:
-                print(f"Error REC: {e}")
+                self.status_message = f"Error Video: {e}"
         else:
-            # STOP
             self.close_video_file()
 
     def toggle_pause(self):
@@ -171,7 +179,7 @@ class KivyCamera(Image):
 
 Factory.register('KivyCamera', cls=KivyCamera)
 
-# --- DISEÑO KV (ACTUALIZADO) ---
+# --- DISEÑO KV ---
 KV = '''
 #:import dp kivy.metrics.dp
 #:import sp kivy.metrics.sp
@@ -260,27 +268,22 @@ ScreenManager:
             Rectangle:
                 pos: self.pos
                 size: self.size
-
         Image:
             source: 'logo.png'
             size_hint_y: 0.5
             allow_stretch: True
-        
         Label:
             text: "CIMA CAM"
             font_size: sp(36)
             bold: True
             color: color_gold
             size_hint_y: 0.1
-
         Label:
             text: "Relevamiento Inteligente"
             color: (0.6, 0.6, 0.6, 1)
             size_hint_y: 0.1
-
         Widget:
             size_hint_y: 0.2
-
         BotonECAM:
             text: "INICIAR PROYECTO"
             on_release: app.root.current = 'project'
@@ -297,7 +300,6 @@ ScreenManager:
             Rectangle:
                 pos: self.pos
                 size: self.size
-
         Label:
             text: "Nuevo Proyecto"
             font_size: sp(24)
@@ -305,13 +307,11 @@ ScreenManager:
             bold: True
             size_hint_y: None
             height: dp(60)
-
         TextInput:
             id: empresa_input
             hint_text: "Cliente / Empresa"
             size_hint_y: None
             height: dp(55)
-
         TextInput:
             id: fecha_input
             text: root.get_date()
@@ -319,10 +319,8 @@ ScreenManager:
             size_hint_y: None
             height: dp(55)
             foreground_color: (0.6, 0.6, 0.6, 1)
-
         Widget:
             size_hint_y: 1
-
         BotonECAM:
             text: "SIGUIENTE"
             on_release: root.crear_proyecto()
@@ -339,7 +337,6 @@ ScreenManager:
             Rectangle:
                 pos: self.pos
                 size: self.size
-
         Label:
             text: "¿Qué vamos a medir?"
             font_size: sp(22)
@@ -347,7 +344,6 @@ ScreenManager:
             bold: True
             size_hint_y: None
             height: dp(50)
-
         ScrollView:
             BoxLayout:
                 orientation: 'vertical'
@@ -355,7 +351,6 @@ ScreenManager:
                 height: self.minimum_height
                 spacing: dp(15)
                 padding: [0, dp(10)]
-
                 BotonECAM:
                     text: "ERGONOMÍA"
                     on_release: root.select_type("ERGONOMIA")
@@ -372,7 +367,7 @@ ScreenManager:
                     text: "PUESTA A TIERRA"
                     on_release: root.select_type("PAT")
                 BotonECAM:
-                    text: "TERMOGRAFÍA (IA BETA)"
+                    text: "TERMOGRAFÍA (BETA)"
                     on_release: root.select_type("TERMOGRAFIA")
 
 <JobScreen>:
@@ -387,14 +382,12 @@ ScreenManager:
             Rectangle:
                 pos: self.pos
                 size: self.size
-
         Label:
             text: app.current_company
             font_size: sp(18)
             color: (0.5, 0.5, 0.5, 1)
             size_hint_y: None
             height: dp(30)
-
         Label:
             text: app.current_measurement_type
             font_size: sp(26)
@@ -402,23 +395,19 @@ ScreenManager:
             color: color_gold
             size_hint_y: None
             height: dp(50)
-
         Label:
             text: "Ubicación / Sector"
             halign: 'left'
             text_size: self.size
             size_hint_y: None
             height: dp(30)
-
         TextInput:
             id: puesto_input
             hint_text: "Ej: Hall Central"
             size_hint_y: None
             height: dp(55)
-
         Widget:
             size_hint_y: 1
-
         BotonECAM:
             text: "ABRIR CÁMARA"
             on_release: root.iniciar_puesto()
@@ -431,8 +420,18 @@ ScreenManager:
             id: qrcam
             size_hint: (1, 1)
             fit_mode: "cover"
+        
+        # Muestra mensajes de estado/error sobre la cámara en ROJO
+        Label:
+            text: qrcam.status_message
+            color: color_red
+            font_size: sp(18)
+            bold: True
+            halign: 'center'
+            pos_hint: {'center_x': 0.5, 'center_y': 0.5}
+            size_hint: (0.8, None)
+            height: dp(50)
 
-        # SILUETA GUÍA
         Image:
             id: guide_overlay
             source: app.current_guide_image
@@ -440,8 +439,6 @@ ScreenManager:
             allow_stretch: True
             opacity: 0.4 if app.current_guide_image else 0
             fit_mode: "contain"
-
-        # INFO SUPERIOR
         BoxLayout:
             size_hint: (1, None)
             height: dp(60)
@@ -453,7 +450,6 @@ ScreenManager:
                 Rectangle:
                     pos: self.pos
                     size: self.size
-            
             Label:
                 text: app.current_measurement_type
                 bold: True
@@ -461,14 +457,11 @@ ScreenManager:
                 halign: 'left'
                 text_size: self.size
                 font_size: sp(14)
-            
             Label:
                 text: str(qrcam.capture_count)
                 halign: 'right'
                 text_size: self.size
                 bold: True
-
-        # AVISO DE ESTADO
         Label:
             text: "● PAUSA" if (qrcam.is_recording and qrcam.is_paused) else ("● GRABANDO" if qrcam.is_recording else "")
             color: color_gold if qrcam.is_paused else color_red
@@ -476,8 +469,6 @@ ScreenManager:
             bold: True
             pos_hint: {'center_x': 0.5, 'center_y': 0.85}
             opacity: 1 if qrcam.is_recording else 0
-
-        # BOTÓN GUÍA (Solo visible en modos que lo requieran)
         BotonCam:
             text: "GUÍA"
             size_hint: (None, None)
@@ -488,8 +479,6 @@ ScreenManager:
             opacity: 1 if app.current_measurement_type == "ERGONOMIA" else 0
             disabled: True if app.current_measurement_type != "ERGONOMIA" else False
             on_release: app.cycle_guide()
-
-        # CONTROLES INFERIORES
         BoxLayout:
             size_hint: (1, None)
             height: dp(120)
@@ -502,18 +491,15 @@ ScreenManager:
                 Rectangle:
                     pos: self.pos
                     size: self.size
-
             BotonCam:
                 text: "FOTO"
                 background_color: (0.3, 0.3, 0.3, 1)
                 on_release: qrcam.take_photo()
-
             BotonCam:
                 text: "■" if qrcam.is_recording else "▶"
                 font_size: sp(30)
                 background_color: color_red if qrcam.is_recording else color_green
                 on_release: qrcam.toggle_record_stop()
-
             BotonCam:
                 text: "II"
                 font_size: sp(22)
@@ -521,14 +507,13 @@ ScreenManager:
                 disabled: not qrcam.is_recording
                 opacity: 1 if qrcam.is_recording else 0.3
                 on_release: qrcam.toggle_pause()
-
             BotonCam:
                 text: "FIN"
                 color: color_black
                 background_color: color_gold
                 on_release: qrcam.exit_screen()
 
-# --- NUEVA PANTALLA: FORMULARIO EXTINTORES ---
+# --- PANTALLA MANUAL DE EXTINTORES ---
 <ExtinguisherFormScreen>:
     name: 'extinguisher_form'
     BoxLayout:
@@ -550,7 +535,6 @@ ScreenManager:
             size_hint_y: None
             height: dp(30)
 
-        # Muestra la foto que acabamos de sacar para leer los datos
         Image:
             id: img_preview
             source: ''
@@ -591,7 +575,7 @@ ScreenManager:
                     height: dp(45)
                 TextInput:
                     id: ext_ph
-                    hint_text: "Vencimiento Prueba Hidráulica"
+                    hint_text: "Vencimiento PH"
                     size_hint_y: None
                     height: dp(45)
                 TextInput:
@@ -628,7 +612,6 @@ ScreenManager:
             Rectangle:
                 pos: self.pos
                 size: self.size
-
         Label:
             text: "Finalizar Relevamiento"
             font_size: sp(22)
@@ -636,23 +619,19 @@ ScreenManager:
             bold: True
             size_hint_y: None
             height: dp(50)
-
         TextInput:
             id: notas_input
             hint_text: "Observaciones generales..."
             multiline: True
             size_hint_y: 1
-
         BoxLayout:
             size_hint_y: None
             height: dp(60)
             spacing: dp(20)
-            
             Button:
                 text: "DESCARTAR"
                 background_color: (0.5, 0.2, 0.2, 1)
                 on_release: root.finalizar(guardar=False)
-            
             Button:
                 text: "GUARDAR"
                 background_color: color_gold
@@ -671,14 +650,15 @@ class ProjectScreen(Screen):
         empresa = self.ids.empresa_input.text.strip()
         if empresa:
             app.current_company = empresa
-            # Ruta segura para Android
             if platform == 'android':
-                from android.storage import primary_external_storage_path
-                base = os.path.join(primary_external_storage_path(), "Download", "CimaCam_Datos")
+                # --- CORRECCIÓN DE ALMACENAMIENTO PARA ANDROID 13 ---
+                # Usamos user_data_dir, que es el almacenamiento privado de la app.
+                # NO requiere permisos de WRITE_EXTERNAL_STORAGE.
+                base = app.user_data_dir
             else:
                 base = os.path.join(os.getcwd(), "CimaCam_Datos")
             
-            app.path_empresa = os.path.join(base, empresa)
+            app.path_empresa = os.path.join(base, "Datos", empresa)
             if not os.path.exists(app.path_empresa):
                 os.makedirs(app.path_empresa, exist_ok=True)
             app.root.current = 'measurement'
@@ -695,7 +675,6 @@ class JobScreen(Screen):
         puesto = self.ids.puesto_input.text.strip()
         if puesto:
             app.current_post = puesto
-            # Crear carpeta para este puesto
             folder = f"{app.current_measurement_type}_{puesto}_{datetime.now().strftime('%H%M')}"
             app.path_puesto = os.path.join(app.path_empresa, folder)
             if not os.path.exists(app.path_puesto):
@@ -712,20 +691,14 @@ class JobScreen(Screen):
 class CameraScreen(Screen):
     def setup_guides(self):
         app = App.get_running_app()
-        # Lógica de guías según el tipo
         if app.current_measurement_type == "ERGONOMIA":
-            app.current_guide_image = 'guia_frente.png' # Inicio por defecto
-        elif app.current_measurement_type == "TERMOGRAFIA":
-             # Aquí podríamos poner una mira central
-             app.current_guide_image = ''
+            app.current_guide_image = 'guia_frente.png'
         else:
-            # Modos limpios: RUIDO, ILUMINACION, PAT, INCENDIOS (porque la foto es limpia)
             app.current_guide_image = ''
 
 class ExtinguisherFormScreen(Screen):
     def cargar_imagen(self, path):
         self.ids.img_preview.source = path
-        # Limpiar campos
         self.ids.ext_marca.text = ""
         self.ids.ext_tipo.text = ""
         self.ids.ext_capacidad.text = ""
@@ -735,18 +708,15 @@ class ExtinguisherFormScreen(Screen):
         self.ids.ext_empresa.text = ""
 
     def cancelar(self):
-        # Volver a la cámara sin guardar datos (la foto ya existe pero no se indexa)
         app = App.get_running_app()
         app.root.current = 'camera'
 
     def guardar_datos(self):
         app = App.get_running_app()
-        
-        # Recopilar datos
         datos = [
             datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
             app.current_post,
-            os.path.basename(app.temp_photo_path), # Nombre del archivo de foto
+            os.path.basename(app.temp_photo_path),
             self.ids.ext_marca.text,
             self.ids.ext_tipo.text,
             self.ids.ext_capacidad.text,
@@ -755,23 +725,16 @@ class ExtinguisherFormScreen(Screen):
             self.ids.ext_ph.text,
             self.ids.ext_empresa.text
         ]
-        
-        # Archivo CSV
         csv_file = os.path.join(app.path_empresa, f"Relevamiento_Extintores_{app.current_company}.csv")
-        encabezados = ["Fecha", "Sector", "Foto", "Marca", "Tipo", "Capacidad", "N_Fabricacion", "Venc_Carga", "Venc_PH", "Empresa"]
-        
+        encabezados = ["Fecha", "Sector", "Foto", "Marca", "Tipo", "Capacidad", "N_Fab", "Venc_Carga", "Venc_PH", "Empresa"]
         es_nuevo = not os.path.exists(csv_file)
-        
         try:
             with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f, delimiter=';')
-                if es_nuevo:
-                    writer.writerow(encabezados)
+                if es_nuevo: writer.writerow(encabezados)
                 writer.writerow(datos)
-            print("Datos guardados en CSV")
         except Exception as e:
-            print(f"Error escribiendo CSV: {e}")
-            
+            print(f"Error CSV: {e}")
         app.root.current = 'camera'
 
 class ReviewScreen(Screen):
@@ -789,7 +752,6 @@ class ReviewScreen(Screen):
         cam_screen = app.root.get_screen('camera')
         if hasattr(cam_screen.ids, 'qrcam'):
             cam_screen.ids.qrcam.stop_camera()
-
         if guardar:
             txt = self.ids.notas_input.text
             if txt:
@@ -801,7 +763,6 @@ class ReviewScreen(Screen):
                     f.write(f"FECHA: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n")
                     f.write("="*30 + "\n")
                     f.write(txt)
-        
         self.ids.notas_input.text = ""
         app.root.current = 'measurement'
 
@@ -809,19 +770,10 @@ class CimaCamApp(App):
     current_company = StringProperty("")
     current_post = StringProperty("")
     current_measurement_type = StringProperty("ERGONOMIA")
-    
     path_empresa = ""
     path_puesto = ""
-    temp_photo_path = "" # Para pasar datos entre pantallas
-    
-    # Lista de guías
-    guide_list = ListProperty([
-        'guia_frente.png',
-        'guia_perfil.png',
-        'guia_admin_perfil.png',
-        'guia_admin_frente.png',
-        'guia_levantamiento.png'
-    ])
+    temp_photo_path = "" 
+    guide_list = ListProperty(['guia_frente.png', 'guia_perfil.png', 'guia_admin_perfil.png', 'guia_admin_frente.png', 'guia_levantamiento.png'])
     current_guide_index = NumericProperty(0)
     current_guide_image = StringProperty('')
 
@@ -839,12 +791,13 @@ class CimaCamApp(App):
                 Permission.CAMERA,
                 Permission.RECORD_AUDIO,
                 Permission.WRITE_EXTERNAL_STORAGE,
-                Permission.READ_EXTERNAL_STORAGE
+                Permission.READ_EXTERNAL_STORAGE,
+                Permission.INTERNET
             ])
         return Builder.load_string(KV)
 
     def on_key(self, window, key, *args):
-        if key == 27: # BACK button
+        if key == 27:
             sm = self.root
             if sm.current == 'extinguisher_form':
                 sm.current = 'camera'
@@ -859,7 +812,7 @@ class CimaCamApp(App):
             elif sm.current == 'measurement':
                 sm.current = 'project'
                 return True
-            return False # Close app
+            return False
 
 if __name__ == '__main__':
     CimaCamApp().run()
