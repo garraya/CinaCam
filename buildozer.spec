@@ -21,11 +21,5 @@ android.minapi = 24
 android.ndk = 25b
 android.accept_sdk_license = True
 android.archs = arm64-v8a, armeabi-v7a
-android.gradle_dependencies = \
-    androidx.camera:camera-core:1.3.2,\
-    androidx.camera:camera-camera2:1.3.2,\
-    androidx.camera:camera-lifecycle:1.3.2,\
-    androidx.camera:camera-video:1.3.2,\
-    androidx.camera:camera-view:1.3.2,\
-    androidx.camera:camera-extensions:1.3.2
+android.gradle_dependencies = androidx.camera:camera-core:1.3.2,androidx.camera:camera-camera2:1.3.2,androidx.camera:camera-lifecycle:1.3.2,androidx.camera:camera-video:1.3.2,androidx.camera:camera-view:1.3.2,androidx.camera:camera-extensions:1.3.2
 p4a.branch = master
