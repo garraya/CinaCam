@@ -13,12 +13,12 @@ requirements = python3, kivy==2.3.0, camera4kivy, gestures4kivy, numpy==1.26.4
 
 orientation = portrait
 fullscreen = 0
-android.permissions = CAMERA, RECORD_AUDIO, WRITE_EXTERNAL_STORAGE, READ_EXTERNAL_STORAGE
-android.api = 24
+android.permissions = CAMERA, RECORD_AUDIO
+android.api = 33
 android.minapi = 24
-android.ndk = 25b
+android.ndk_api = 24
 android.accept_sdk_license = True
-android.archs = arm64-v8a, armeabi-v7a
+android.archs = arm64-v8a
 android.gradle_dependencies = androidx.camera:camera-core:1.3.2,androidx.camera:camera-camera2:1.3.2,androidx.camera:camera-lifecycle:1.3.2,androidx.camera:camera-video:1.3.2,androidx.camera:camera-view:1.3.2,androidx.camera:camera-extensions:1.3.2
 p4a.branch = develop
 sdl2.version = 2.28.5
