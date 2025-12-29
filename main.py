@@ -11,6 +11,8 @@ from kivy.metrics import dp, sp
 from kivy.factory import Factory 
 from kivy.uix.popup import Popup
 from kivy.uix.label import Label
+from kivy.uix.boxlayout import BoxLayout
+
 import cv2
 import numpy as np
 import os
@@ -21,13 +23,13 @@ from datetime import datetime
 if platform not in ['android', 'ios']:
     Window.size = (400, 750)
 
-# --- CLASE CÁMARA MEJORADA ---
+# --- CLASE CÁMARA ROBUSTA (MULTI-BACKEND) ---
 class KivyCamera(Image):
     is_recording = BooleanProperty(False)
     is_paused = BooleanProperty(False)
     video_writer = None
     capture_count = NumericProperty(0)
-    status_info = StringProperty("Iniciando...")
+    status_info = StringProperty("Iniciando sistema...") 
     
     def __init__(self, **kwargs):
         super(KivyCamera, self).__init__(**kwargs)
@@ -36,34 +38,50 @@ class KivyCamera(Image):
         self.last_photo_path = "" 
 
     def start_camera(self):
-        self.status_info = "Conectando cámara..."
+        self.status_info = "Probando drivers..."
         if self.capture:
             self.capture.release()
-        
-        # --- SOLUCIÓN CRÍTICA PARA ANDROID ---
-        # Usamos cv2.CAP_ANDROID para obligar a usar el driver del celular
-        # Si estamos en PC, usará el normal.
-        backend = cv2.CAP_ANDROID if platform == 'android' else cv2.CAP_ANY
-        
-        # Intentamos cámara 0 (Trasera en la mayoría)
-        try:
-            self.capture = cv2.VideoCapture(0, backend)
-        except:
-            self.capture = cv2.VideoCapture(0)
+            
+        # --- ESTRATEGIA DE FUERZA BRUTA ---
+        # Probamos diferentes configuraciones hasta que una funcione
+        configs = [
+            (0, cv2.CAP_V4L2, "Cámara 0 (V4L2)"),      # Estándar Linux (Mejor para Xiaomi/Samsung)
+            (0, cv2.CAP_ANDROID, "Cámara 0 (Android)"), # Estándar antiguo
+            (0, cv2.CAP_ANY, "Cámara 0 (Auto)"),       # Automático
+            (1, cv2.CAP_V4L2, "Cámara 1 (V4L2)"),      # Frontal Linux
+            (1, cv2.CAP_ANDROID, "Cámara 1 (Android)")  # Frontal Android
+        ]
 
-        if not self.capture.isOpened():
-            print("Cámara 0 falló, probando 1...")
-            self.status_info = "Cámara 0 falló, probando frontal..."
+        found = False
+        for idx, backend, name in configs:
+            self.status_info = f"Probando: {name}..."
+            print(f"Intento: {name}")
             try:
-                self.capture = cv2.VideoCapture(1, backend)
-            except:
-                self.capture = cv2.VideoCapture(1)
+                cap = cv2.VideoCapture(idx, backend)
+                
+                # IMPORTANTE: Forzar resolución baja para asegurar compatibilidad
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                
+                if cap.isOpened():
+                    # Prueba de lectura real
+                    ret, frame = cap.read()
+                    if ret and frame is not None and frame.size > 0:
+                        self.capture = cap
+                        self.status_info = f"¡Conectado: {name}!"
+                        found = True
+                        break
+                    else:
+                        cap.release()
+            except Exception as e:
+                print(f"Fallo en {name}: {e}")
 
-        if self.capture.isOpened():
-            self.status_info = "" # Limpiar mensaje si funciona
+        if found:
             Clock.schedule_interval(self.update, 1.0 / self.fps)
+            # Ocultar mensaje de éxito tras 2 segundos
+            Clock.schedule_once(lambda dt: setattr(self, 'status_info', ''), 2)
         else:
-            self.status_info = "ERROR: No se detecta ninguna cámara."
+            self.status_info = "ERROR CRÍTICO:\nNingún driver funcionó.\nReinicia el celular."
 
     def stop_camera(self):
         Clock.unschedule(self.update)
@@ -76,9 +94,7 @@ class KivyCamera(Image):
         if self.capture:
             ret, frame = self.capture.read()
             if ret:
-                self.status_info = "" # Todo OK
                 if platform == 'android':
-                    # Rotar porque Android entrega la imagen acostada
                     frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
                 if self.is_recording and not self.is_paused and self.video_writer:
@@ -86,8 +102,7 @@ class KivyCamera(Image):
 
                 self.current_clean_frame = frame
 
-                # Optimizar tamaño para que no se ponga lenta la app
-                scale_percent = 640 / frame.shape[0] 
+                scale_percent = 640 / frame.shape[0]
                 width = int(frame.shape[1] * scale_percent)
                 height = int(frame.shape[0] * scale_percent)
                 
@@ -98,52 +113,53 @@ class KivyCamera(Image):
                     texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
                     self.texture = texture
             else:
-                self.status_info = "Esperando imagen..."
+                # Si se pierde la conexión, reintentar lectura
+                pass
 
     def take_photo(self):
         app = App.get_running_app()
         if hasattr(self, 'current_clean_frame'):
             try:
-                # Guardar en carpeta privada de la app (siempre permitido)
-                save_path = app.path_puesto
-                if not os.path.exists(save_path):
-                    os.makedirs(save_path, exist_ok=True)
+                # Guardar en carpeta privada (User Data) para evitar bloqueos de Android 13
+                save_dir = app.path_puesto
+                if not os.path.exists(save_dir):
+                    os.makedirs(save_dir, exist_ok=True)
                     
                 prefix = app.current_measurement_type[:3]
                 timestamp = datetime.now().strftime('%H%M%S')
-                filename = f"{save_path}/{prefix}_Foto_{timestamp}.jpg"
+                filename = f"{save_dir}/{prefix}_Foto_{timestamp}.jpg"
                 
                 cv2.imwrite(filename, self.current_clean_frame)
                 self.capture_count += 1
                 self.last_photo_path = filename
                 print(f"Foto guardada: {filename}")
-                self.status_info = "¡Foto Guardada!"
+                self.status_info = "¡FOTO GUARDADA!"
+                Clock.schedule_once(lambda dt: setattr(self, 'status_info', ''), 1.5)
                 
                 if app.current_measurement_type == "INCENDIOS":
-                    app.temp_photo_path = filename
+                    app.temp_photo_path = filename 
                     app.root.get_screen('extinguisher_form').cargar_imagen(filename)
                     app.root.current = 'extinguisher_form'
                     
             except Exception as e:
-                self.status_info = f"Error guardando: {str(e)}"
-                print(f"Error al guardar foto: {e}")
+                self.status_info = f"Error Foto: {e}"
 
     def toggle_record_stop(self):
         app = App.get_running_app()
         if not self.is_recording:
             try:
-                save_path = app.path_puesto
-                if not os.path.exists(save_path):
-                    os.makedirs(save_path, exist_ok=True)
-                    
+                save_dir = app.path_puesto
+                if not os.path.exists(save_dir):
+                    os.makedirs(save_dir, exist_ok=True)
+
                 prefix = app.current_measurement_type[:3]
-                filename = f"{save_path}/{prefix}_Video_{datetime.now().strftime('%H%M%S')}.mp4"
+                filename = f"{save_dir}/{prefix}_Video_{datetime.now().strftime('%H%M%S')}.mp4"
                 
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 if platform == 'android': width, height = height, width
-                
+
                 self.video_writer = cv2.VideoWriter(filename, fourcc, 20.0, (width, height))
                 self.is_recording = True
                 self.is_paused = False
@@ -415,7 +431,7 @@ ScreenManager:
             size_hint: (1, 1)
             fit_mode: "cover"
         
-        # MENSAJE DE ESTADO EN PANTALLA
+        # MENSAJE DE DIAGNÓSTICO EN ROJO
         Label:
             text: qrcam.status_info
             color: color_red
@@ -643,7 +659,7 @@ class ProjectScreen(Screen):
         if empresa:
             app.current_company = empresa
             if platform == 'android':
-                # --- GUARDADO SEGURO ANDROID 13+ ---
+                # --- SOLUCIÓN DE ALMACENAMIENTO PARA ANDROID 13+ ---
                 base = app.user_data_dir
             else:
                 base = os.path.join(os.getcwd(), "CimaCam_Datos")
