@@ -9,7 +9,7 @@ icon.filename = logo.png
 
 python.version = 3.10
 
-requirements = python3, kivy==2.3.0, camera4kivy, gestures4kivy, numpy==1.24.4
+requirements = python3, kivy==2.3.0, camera4kivy, gestures4kivy, numpy
 
 orientation = portrait
 fullscreen = 0
