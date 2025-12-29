@@ -13,20 +13,16 @@ from kivy.uix.popup import Popup
 from kivy.uix.label import Label
 from kivy.uix.boxlayout import BoxLayout
 
+# --- IMPORTACIONES VITALES ---
+from jnius import autoclass
 import os
 import time
 import csv
 from datetime import datetime
 
-# --- IMPORTACIONES SEGURAS PARA PC Y ANDROID ---
-if platform == 'android':
-    try:
-        from jnius import autoclass
-    except ImportError:
-        autoclass = None
-else:
-    autoclass = None
-    Window.size = (400, 750) # Tamaño simulado en PC
+# --- CONFIGURACIÓN PARA PC ---
+if platform not in ['android', 'ios']:
+    Window.size = (400, 750)
 
 # --- CLASE CÁMARA NATIVA MEJORADA ---
 class KivyCamera(Camera):
@@ -36,10 +32,13 @@ class KivyCamera(Camera):
     status_info = StringProperty("Cámara lista") 
     
     def __init__(self, **kwargs):
-        # CAMBIO CLAVE: resolution HD y fit_mode="cover" para QUITAR MÁRGENES NEGROS
+        # CAMBIO 1: SOLUCIÓN MÁRGENES NEGROS
+        # keep_ratio=False obliga a la imagen a estirarse.
+        # allow_stretch=True permite ocupar todo el espacio.
         super(KivyCamera, self).__init__(resolution=(1920, 1080), index=0, play=False, **kwargs)
-        self.fit_mode = "cover"  # <--- ESTO LLENA LA PANTALLA
+        self.fit_mode = "cover" 
         self.allow_stretch = True
+        self.keep_ratio = False 
 
     def start_camera(self):
         self.play = True
@@ -49,18 +48,19 @@ class KivyCamera(Camera):
         self.play = False
         self.status_info = "Cámara Pausada"
 
-    # --- CAMBIO DE LENTES (CON PROTECCIÓN ANTI-CIERRE) ---
+    # --- CAMBIO 2: SOLUCIÓN LENTE 0.5x (BÚSQUEDA INTELIGENTE) ---
     def cambiar_lente(self, tipo):
         self.play = False 
         
         if tipo == '1x':
-            self.index = 0 # Principal
+            self.index = 0
             self.status_info = "Lente: Principal"
             Clock.schedule_once(lambda dt: self.reactivar(), 0.5)
             
         elif tipo == '0.5x':
-            self.status_info = "Probando Gran Angular..."
-            # Intentamos índice 2 (común para Wide) con protección
+            self.status_info = "Buscando Gran Angular..."
+            # Algunos celulares usan ID 2, otros 3 o 4 para el 0.5x
+            # Probamos en cadena
             Clock.schedule_once(lambda dt: self.probar_lente_extra(2), 0.5)
             
         elif tipo == 'front':
@@ -69,16 +69,18 @@ class KivyCamera(Camera):
 
     def probar_lente_extra(self, indice_nuevo):
         try:
-            # Intentamos cambiar. Si el ID no existe, Kivy lanzará error aquí.
             self.index = indice_nuevo
             self.play = True
-            self.status_info = "Lente Activado"
+            self.status_info = f"Lente ID {indice_nuevo} Activo"
         except Exception as e:
-            print(f"Error lente {indice_nuevo}: {e}")
-            self.status_info = "Lente no disponible"
-            # Si falla, volvemos al 0 automáticamente
-            self.index = 0
-            self.play = True
+            # Si falla el 2, intentamos el 3 (común en Samsung/Xiaomi)
+            if indice_nuevo == 2:
+                print("Falló ID 2, probando ID 3...")
+                self.probar_lente_extra(3)
+            else:
+                self.status_info = "Lente no disponible"
+                self.index = 0
+                self.play = True
 
     def reactivar(self):
         try:
@@ -115,20 +117,25 @@ class KivyCamera(Camera):
         except Exception as e:
             self.status_info = f"Error: {str(e)}"
 
-    # --- VIDEO NATIVO (GRABACIÓN REAL) ---
+    # --- CAMBIO 3: SOLUCIÓN ERROR VIDEO (STRICTMODE FIX) ---
     def toggle_record_stop(self):
-        if platform == 'android' and autoclass:
+        if platform == 'android':
             try:
+                # Importamos clases Java
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 Intent = autoclass('android.content.Intent')
                 MediaStore = autoclass('android.provider.MediaStore')
                 Uri = autoclass('android.net.Uri')
                 File = autoclass('java.io.File')
+                
+                # --- AQUÍ ESTABA EL ERROR: Sintaxis correcta con $ ---
                 StrictMode = autoclass('android.os.StrictMode')
-
-                # Permiso para guardar archivo
-                builder = StrictMode.VmPolicy.Builder()
+                Builder = autoclass('android.os.StrictMode$VmPolicy$Builder') # <--- IMPORTANTE
+                
+                # Bypass de seguridad corregido
+                builder = Builder()
                 StrictMode.setVmPolicy(builder.build())
+                # -----------------------------------------------------
 
                 app = App.get_running_app()
                 save_dir = app.path_puesto
@@ -144,17 +151,18 @@ class KivyCamera(Camera):
 
                 intent = Intent(MediaStore.ACTION_VIDEO_CAPTURE)
                 intent.putExtra(MediaStore.EXTRA_OUTPUT, video_uri)
-                intent.putExtra(MediaStore.EXTRA_VIDEO_QUALITY, 1) # Alta Calidad
+                intent.putExtra(MediaStore.EXTRA_VIDEO_QUALITY, 1)
 
                 current_activity = PythonActivity.mActivity
                 current_activity.startActivity(intent)
                 
-                self.status_info = "Video guardado en carpeta"
+                self.status_info = "Video guardado al volver"
                 
             except Exception as e:
                 self.status_info = f"Error Video: {str(e)}"
+                print(f"Error Video Trace: {e}")
         else:
-            self.status_info = "Video no disponible en PC"
+            self.status_info = "Solo funciona en Android"
 
     def toggle_pause(self):
         if self.is_recording:
@@ -408,7 +416,7 @@ ScreenManager:
     name: 'camera'
     on_pre_enter: root.setup_guides()
     FloatLayout:
-        # CONTENEDOR ROTADO: Ahora con fit_mode en la cámara
+        # CONTENEDOR ROTADO: Ajustado para cubrir toda la pantalla
         RelativeLayout:
             size_hint: (1, 1)
             canvas.before:
@@ -422,7 +430,7 @@ ScreenManager:
             KivyCamera:
                 id: qrcam
                 size_hint: (1, 1)
-                # fit_mode="cover" (definido en la clase) se encarga de los márgenes
+                fit_mode: "cover" # ESTO QUITA LOS MÁRGENES NEGROS
         
         # Mensajes
         Label:
@@ -822,6 +830,7 @@ class CimaCamApp(App):
     current_guide_index = NumericProperty(0)
     current_guide_image = StringProperty('')
     
+    # --- ROTACIÓN PARA ANDROID ---
     cam_rotation = NumericProperty(0) 
 
     def cycle_guide(self):
@@ -841,7 +850,7 @@ class CimaCamApp(App):
     def build(self):
         Window.bind(on_keyboard=self.on_key)
         
-        # --- ROTACIÓN AJUSTADA A 270 GRADOS (Solución para "De Cabeza") ---
+        # --- ROTACIÓN AJUSTADA A 270 GRADOS ---
         if platform == 'android':
             self.cam_rotation = 270
         else:
